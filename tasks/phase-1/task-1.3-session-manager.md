@@ -1,6 +1,9 @@
 # TASK 1.3: Session Manager + IPC
 > Phase 1 — Foundation | Single Session | Depends on: Task 1.2
 
+## Status
+Completed (2026-02-07) in `cdb32ca`.
+
 ## What to Build
 Session CRUD: create session (claims from PTY pool), write to PTY stdin, read PTY stdout via events, resize, destroy. Wire up Tauri IPC commands and events for terminal I/O.
 

@@ -1,6 +1,9 @@
 # TASK 1.2: PTY Process Pool
 > Phase 1 — Foundation | Single Session | Depends on: Task 1.1
 
+## Status
+Completed (2026-02-07) in `cbfaa89` and `94b48c3`.
+
 ## What to Build
 Implement a pre-warmed PTY process pool in Rust. On app launch, fork 2 idle shell processes. Provide claim/release/recycle lifecycle methods. Replace claimed shells automatically.
 

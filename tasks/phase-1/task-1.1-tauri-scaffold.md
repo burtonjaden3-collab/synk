@@ -1,6 +1,9 @@
 # TASK 1.1: Tauri Scaffold
 > Phase 1 — Foundation | Single Session | Depends on: Nothing
 
+## Status
+Completed (2026-02-07). Scaffold landed in `6fd62be`; follow-up build tooling + capability baseline updates landed in `cdb32ca`.
+
 ## What to Build
 Initialize a Tauri v2 project with Rust backend + React + TypeScript frontend. Install core dependencies. Verify `npm run tauri dev` runs and opens a window.
 
@@ -175,4 +178,3 @@ project-root/
 - Mermaid Diagrams: `Geist Sans` (12px)
 
 ---
-

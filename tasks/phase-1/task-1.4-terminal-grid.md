@@ -1,6 +1,9 @@
 # TASK 1.4: Terminal Grid UI
 > Phase 1 — Foundation | Single Session | Depends on: Task 1.3
 
+## Status
+Completed (2026-02-07) in `cdb32ca`.
+
 ## What to Build
 React terminal grid using xterm.js. Sessions display in an auto-reflowing grid (up to 12 sessions). Each pane has a header bar showing session number. Connect to Tauri session IPC for real terminal I/O.
 

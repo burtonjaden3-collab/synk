@@ -49,6 +49,8 @@ Everything builds sequentially. One agent, one session.
 ### Task 1.1: Tauri Scaffold
 **What:** Initialize Tauri v2 project with Rust backend + React + TypeScript frontend. Install core dependencies (xterm.js, zustand, tailwind). Verify `npm run tauri dev` runs.
 
+**Status:** Done (2026-02-07). See `6fd62be` (scaffold) and `cdb32ca` (Phase 1 wiring + capability baseline).
+
 **Spec sections:** §2 (Tech Stack), §14 (File Structure)
 
 **Depends on:** Nothing — this is step zero.
@@ -80,6 +82,8 @@ cargo tauri --version
 ### Task 1.1a: Capabilities/Permissions Baseline
 **What:** Decide what runs via Rust backend vs Tauri plugins, then set capabilities/permissions accordingly so later phases don't stall on security plumbing.
 
+**Status:** Done (2026-02-07). See `cdb32ca`.
+
 **Spec sections:** §26 (IPC overview), §34 (Data Storage), any plugin-related spec sections you plan to implement next
 
 **Depends on:** Task 1.1 (project exists)
@@ -97,6 +101,8 @@ package.json                 (add/remove @tauri-apps/plugin-* packages)
 
 ### Task 1.2: PTY Process Pool
 **What:** Implement the pre-warmed PTY process pool in Rust. Spawn shells, detect deterministic readiness marker (prompt regex only as fallback), claim/release/recycle lifecycle.
+
+**Status:** Done (2026-02-07). See `cbfaa89` and `94b48c3`.
 
 **Spec sections:** §22 (PTY Process Pool — full section), §13 (Performance Targets — spawn time, latency)
 
@@ -116,6 +122,8 @@ src-tauri/src/lib.rs                  (module declarations)
 ### Task 1.3: Session Manager + IPC
 **What:** Session CRUD: create session (claim from pool), write to PTY, resize, destroy. Wire up Tauri IPC commands and events for terminal I/O.
 
+**Status:** Done (2026-02-07). See `cdb32ca`.
+
 **Spec sections:** §26 (Tauri IPC — session commands + session events ONLY), §8.1-8.4 (Session Management), §22 (Pool — how claim/release works)
 
 **Depends on:** Task 1.2 (pool exists)
@@ -134,6 +142,8 @@ src-tauri/src/lib.rs                  (register commands)
 
 ### Task 1.4: Terminal Grid UI
 **What:** React session grid with xterm.js rendering. Auto-reflow layout (1×1 through 4×3, where notation is `cols×rows`). Pane headers with agent badge and status dot. Connect to session IPC.
+
+**Status:** Done (2026-02-07). See `cdb32ca`.
 
 **Spec sections:** §8.1 (Grid Layout table), §11 (UI Design — colors, typography), §3 (Core Architecture — layout diagram), §26 (IPC — session:output event)
 
