@@ -1,0 +1,21 @@
+{
+  "default": null,
+  "permission": [
+    {
+      "identifier": "synk",
+      "description": "Synk app commands",
+      "commands": {
+        "allow": [
+          "session:create",
+          "session:destroy",
+          "session:write",
+          "session:resize",
+          "session:list",
+          "debug_pool_stats",
+          "debug_pool_roundtrip"
+        ],
+        "deny": []
+      }
+    }
+  ]
+}
