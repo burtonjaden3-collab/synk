@@ -23,7 +23,7 @@ Each task lists:
 Everything builds sequentially. One agent, one session.
 
 ### Task 1.1: Tauri Scaffold
-**What:** Initialize Tauri v2 project with Rust backend + React + TypeScript frontend. Install core dependencies (xterm.js, zustand, tailwind). Verify `cargo tauri dev` runs.
+**What:** Initialize Tauri v2 project with Rust backend + React + TypeScript frontend. Install core dependencies (xterm.js, zustand, tailwind). Verify `npm run tauri dev` runs.
 
 **Spec sections:** §2 (Tech Stack), §14 (File Structure)
 
@@ -32,12 +32,19 @@ Everything builds sequentially. One agent, one session.
 **Files touched:**
 ```
 Everything — this creates the project skeleton
-src-tauri/Cargo.toml, tauri.conf.json, src-tauri/src/main.rs, src-tauri/src/lib.rs
+src-tauri/Cargo.toml, src-tauri/tauri.conf.json, src-tauri/src/main.rs, src-tauri/src/lib.rs
 src/App.tsx, package.json, tailwind.config.js, tsconfig.json
 ```
 
 **Notes:** Agent should create the full directory structure from §14 with empty placeholder files. This prevents future agents from having to guess where things go.
-Also install the Tauri Cargo subcommand first (required for `cargo tauri ...`):
+For dev, prefer the project-local CLI:
+
+```bash
+npm ci
+npm run tauri dev
+```
+
+If you specifically want `cargo tauri ...` (Rust subcommand), install it once:
 
 ```bash
 cargo install tauri-cli --locked
@@ -136,9 +143,12 @@ src/components/home/HomeScreen.tsx     (new)
 src/components/home/DashboardStats.tsx (new)
 src/App.tsx                            (add routing: home ↔ workspace)
 src/lib/store.ts                       (new — Zustand store skeleton)
+src-tauri/src/main.rs                  (register dialog plugin if implementing native folder picker)
+src-tauri/Cargo.toml                   (add dialog plugin dependency if implementing native folder picker)
+package.json                           (add @tauri-apps/plugin-dialog if implementing native folder picker)
 ```
 
-**Acceptance test:** App opens to home screen. Click "Open Folder" → select a directory → transitions to workspace with empty grid.
+**Acceptance test:** App opens to home screen. Click "Open Folder" → select a directory (native dialog via Tauri dialog plugin) → transitions to workspace with empty grid.
 
 ---
 
@@ -354,7 +364,7 @@ src-tauri/src/orchestrator/gastown/types.rs    (new)
 ```
 
 #### Task 4A.2: Gastown File Watcher + State Reconciler
-**What:** inotify watcher on ~/gt/, parse file changes, emit orchestrator events, polling fallback.
+**What:** Cross-platform file watcher on ~/gt/ (use `notify` crate; inotify backend on Linux), parse file changes, emit orchestrator events, polling fallback.
 
 **Spec sections:** §15.6 (State Reconciliation), §15.7 (Error Handling)
 
@@ -564,7 +574,7 @@ src/components/shared/NotificationHistory.tsx (new)
 ### Session C: Plugin System + Final Polish
 
 #### Task 6C.1: Plugin Loader
-**What:** Dynamic .so loading, plugin.toml parsing, SDK crate scaffold, plugin UI in settings.
+**What:** Dynamic plugin loading (.so/.dylib/.dll), plugin.toml parsing, SDK crate scaffold, plugin UI in settings.
 
 **Spec sections:** §24 (Plugin API — full section)
 
