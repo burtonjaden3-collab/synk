@@ -27,6 +27,11 @@ export default defineConfig(async () => ({
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
+      // Some environments (CI, containers, remote dev) have very low inotify watcher limits,
+      // which causes ENOSPC crashes if we rely on native file watchers.
+      // Polling trades some CPU for reliability.
+      usePolling: true,
+      interval: 250,
     },
   },
 }));
