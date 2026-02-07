@@ -6,12 +6,22 @@ import { SessionGrid } from "./SessionGrid";
 
 type OutputHandler = (dataB64: string) => void;
 
+function isTauriRuntime(): boolean {
+  // Vite `npm run dev` runs in a normal browser context (no Tauri backend).
+  // Avoid calling `invoke()` in that mode, otherwise you'll get "command ... not found".
+  const w = globalThis as unknown as { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown };
+  return !!(w.__TAURI__ || w.__TAURI_INTERNALS__);
+}
+
 export function Workspace() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [projectPath, setProjectPath] = useState(".");
   const [agentType, setAgentType] = useState<AgentType>("terminal");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const tauriAvailable = useMemo(() => isTauriRuntime(), []);
 
   const outputHandlersRef = useRef<Map<number, OutputHandler>>(new Map());
 
@@ -21,10 +31,20 @@ export function Workspace() {
   };
 
   useEffect(() => {
+    if (!tauriAvailable) {
+      // Keep the app usable for UI iteration in the browser.
+      setSessions([]);
+      setError(null);
+      setNotice("Browser preview mode: run `npm run tauri dev` (not `npm run dev`) to enable sessions.");
+      return;
+    }
+    setNotice(null);
     refreshSessions().catch((e) => setError(String(e)));
-  }, []);
+  }, [tauriAvailable]);
 
   useEffect(() => {
+    if (!tauriAvailable) return;
+
     let unlistenOutput: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
 
@@ -50,7 +70,7 @@ export function Workspace() {
       unlistenOutput?.();
       unlistenExit?.();
     };
-  }, []);
+  }, [tauriAvailable]);
 
   const sessionCount = sessions.length;
   const canAdd = useMemo(() => sessionCount < 12 && !busy, [sessionCount, busy]);
@@ -83,7 +103,7 @@ export function Workspace() {
         </label>
         <button
           className="ml-2 h-9 rounded-lg border border-border bg-bg-primary px-3 text-sm font-medium disabled:opacity-50"
-          disabled={!canAdd}
+          disabled={!tauriAvailable || !canAdd}
           onClick={async () => {
             setError(null);
             setBusy(true);
@@ -101,7 +121,7 @@ export function Workspace() {
         </button>
         <button
           className="h-9 rounded-lg border border-border bg-bg-primary px-3 text-sm font-medium disabled:opacity-50"
-          disabled={busy}
+          disabled={!tauriAvailable || busy}
           onClick={async () => {
             setError(null);
             setBusy(true);
@@ -124,6 +144,12 @@ export function Workspace() {
       {error ? (
         <div className="border-b border-border bg-bg-tertiary px-4 py-2 text-sm text-accent-red">
           {error}
+        </div>
+      ) : null}
+
+      {notice ? (
+        <div className="border-b border-border bg-bg-tertiary px-4 py-2 text-sm text-text-secondary">
+          {notice}
         </div>
       ) : null}
 
@@ -153,4 +179,3 @@ export function Workspace() {
     </div>
   );
 }
-
