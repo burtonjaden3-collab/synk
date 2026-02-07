@@ -17,7 +17,7 @@ src-tauri/src/core/session_manager.rs (implement fully)
 src-tauri/src/commands/session.rs     (new — Tauri #[command] functions)
 src-tauri/src/commands/mod.rs         (module declarations)
 src-tauri/src/events.rs               (new — event type definitions)
-src-tauri/src/main.rs                 (register commands with tauri::Builder)
+src-tauri/src/lib.rs                  (register commands with tauri::Builder)
 ```
 
 ## Acceptance Test

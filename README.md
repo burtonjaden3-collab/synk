@@ -5,7 +5,7 @@ Tauri v2 + React + TypeScript scaffold for Synk.
 ## Dev
 
 ```bash
-npm install
+npm ci
 npm run tauri dev
 ```
 

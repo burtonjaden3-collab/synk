@@ -2,10 +2,10 @@
 > Phase 1 — Foundation | Single Session | Depends on: Nothing
 
 ## What to Build
-Initialize a Tauri v2 project with Rust backend + React + TypeScript frontend. Install core dependencies. Verify `cargo tauri dev` runs and opens a window.
+Initialize a Tauri v2 project with Rust backend + React + TypeScript frontend. Install core dependencies. Verify `npm run tauri dev` runs and opens a window.
 
 ## Deliverables
-1. Working Tauri v2 project — `cargo tauri dev` launches successfully
+1. Working Tauri v2 project — `npm run tauri dev` launches successfully
 2. React + TypeScript frontend with Vite bundler
 3. Tailwind CSS configured with the color tokens from the UI spec below
 4. Core dependencies installed: xterm.js, @xterm/addon-fit, @xterm/addon-webgl, zustand
@@ -15,13 +15,13 @@ Initialize a Tauri v2 project with Rust backend + React + TypeScript frontend. I
 ## Files to Create
 ```
 Everything — this creates the project skeleton
-src-tauri/Cargo.toml, tauri.conf.json, src-tauri/src/main.rs, src-tauri/src/lib.rs
+src-tauri/Cargo.toml, src-tauri/tauri.conf.json, src-tauri/src/main.rs, src-tauri/src/lib.rs
 src/App.tsx, package.json, tailwind.config.js, tsconfig.json
 + all directories from File Structure (§14) with empty .rs and .tsx placeholder files
 ```
 
 ## Acceptance Test
-`cargo tauri dev` → window opens, dark background (#1e1e2e), "Synk" text renders in Geist Sans.
+`npm run tauri dev` → window opens, dark background (#1e1e2e), "Synk" text renders in Geist Sans.
 
 ---
 ## SPEC REFERENCE (Read all of this carefully)
@@ -175,5 +175,4 @@ project-root/
 - Mermaid Diagrams: `Geist Sans` (12px)
 
 ---
-
 

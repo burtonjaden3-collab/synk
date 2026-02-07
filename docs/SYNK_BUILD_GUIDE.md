@@ -18,6 +18,30 @@ Each task lists:
 
 ---
 
+## Conventions (Read Before Starting)
+
+### Tooling + Version Pinning
+
+- **Canonical dev entrypoint:** `npm run tauri dev` (uses the project-local Node CLI).
+- **Reproducibility:** use `npm ci` (enforces `package-lock.json`).
+- **Tauri CLI alignment:**
+  - Node CLI is pinned in `package.json` and locked in `package-lock.json`.
+  - If you use the Rust subcommand (`cargo tauri ...`), install the same version:
+    ```bash
+    cargo install tauri-cli --version 2.10.0 --locked
+    cargo tauri --version
+    ```
+
+### Data Locations
+
+- **Per-project persistent state:**
+  - `/<project>/.synk/config.json`
+  - `/<project>/.synk/sessions/`
+  - `/<project>/.synk/stats/` (optional derived metrics; OK to regenerate)
+- **Global app state (via Tauri path APIs):**
+  - `projects.json` (recent projects list)
+  - `settings.json` (provider auth, performance tuning, keybind overrides)
+
 ## PHASE 1 — Foundation (Single Session)
 
 Everything builds sequentially. One agent, one session.
@@ -44,12 +68,30 @@ npm ci
 npm run tauri dev
 ```
 
-If you specifically want `cargo tauri ...` (Rust subcommand), install it once:
+If you specifically want `cargo tauri ...` (Rust subcommand), install it once (version-pinned):
 
 ```bash
-cargo install tauri-cli --locked
+cargo install tauri-cli --version 2.10.0 --locked
 cargo tauri --version
 ```
+
+---
+
+### Task 1.1a: Capabilities/Permissions Baseline
+**What:** Decide what runs via Rust backend vs Tauri plugins, then set capabilities/permissions accordingly so later phases don't stall on security plumbing.
+
+**Spec sections:** §26 (IPC overview), §34 (Data Storage), any plugin-related spec sections you plan to implement next
+
+**Depends on:** Task 1.1 (project exists)
+
+**Files touched:**
+```
+src-tauri/capabilities/*.json (update plugin permissions)
+src-tauri/Cargo.toml         (add/remove tauri-plugin-* crates)
+package.json                 (add/remove @tauri-apps/plugin-* packages)
+```
+
+**Acceptance test:** Enabled plugins (currently opener + dialog) work without permission errors; deferred features are clearly omitted.
 
 ---
 
@@ -83,7 +125,7 @@ src-tauri/src/lib.rs                  (module declarations)
 src-tauri/src/core/session_manager.rs (implement)
 src-tauri/src/commands/session.rs     (new — Tauri command handlers)
 src-tauri/src/events.rs               (new — event type definitions)
-src-tauri/src/main.rs                 (register commands)
+src-tauri/src/lib.rs                  (register commands)
 ```
 
 **Acceptance test:** From the frontend, invoke `session:create`, receive session ID. Write bytes, receive `session:output` events.
@@ -350,10 +392,22 @@ Three agents working on completely separate subsystems. Interfaces defined in §
 
 ### Session A: Gastown Adapter (Backend)
 
-#### Task 4A.1: Gastown CLI Executor
+#### Task 4A.1: Gastown Setup Wizard Backend
+**What:** Detect CLI, check workspace, add rig, run doctor. All via visible commands.
+
+**Spec sections:** §15.4 (Setup Wizard)
+
+**Files touched:**
+```
+src-tauri/src/orchestrator/gastown/setup_wizard.rs (new)
+```
+
+#### Task 4A.2: Gastown CLI Executor
 **What:** Wrapper for gt/bd commands. Parse output. Execute in visible PTY panes.
 
 **Spec sections:** §15 (Gastown Integration — full section), §16 (Adapter Trait)
+
+**Depends on:** Task 4A.1 (CLI detected + workspace validated)
 
 **Files touched:**
 ```
@@ -363,25 +417,17 @@ src-tauri/src/orchestrator/gastown/cli.rs      (new)
 src-tauri/src/orchestrator/gastown/types.rs    (new)
 ```
 
-#### Task 4A.2: Gastown File Watcher + State Reconciler
+#### Task 4A.3: Gastown File Watcher + State Reconciler
 **What:** Cross-platform file watcher on ~/gt/ (use `notify` crate; inotify backend on Linux), parse file changes, emit orchestrator events, polling fallback.
 
 **Spec sections:** §15.6 (State Reconciliation), §15.7 (Error Handling)
+
+**Depends on:** Task 4A.1 (validated paths exist)
 
 **Files touched:**
 ```
 src-tauri/src/orchestrator/gastown/file_watcher.rs  (new)
 src-tauri/src/orchestrator/gastown/reconciler.rs    (new)
-```
-
-#### Task 4A.3: Gastown Setup Wizard Backend
-**What:** Detect CLI, check workspace, add rig, run doctor. All via visible commands.
-
-**Spec sections:** §15.4 (Setup Wizard)
-
-**Files touched:**
-```
-src-tauri/src/orchestrator/gastown/setup_wizard.rs (new)
 ```
 
 ### Session B: Orchestrator Frontend

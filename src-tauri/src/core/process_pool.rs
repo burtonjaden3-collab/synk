@@ -82,21 +82,42 @@ impl PtyHandle {
         self.created_at.elapsed()
     }
 
-    fn kill(&mut self) {
+    pub fn kill(&mut self) {
         // Best-effort graceful termination on unix, with a hard kill fallback.
         // Matches Task 1.2: SIGTERM then SIGKILL after ~3s.
         self.terminate(Duration::from_secs(3));
         self.state = PtyState::Dead;
     }
 
-    fn write_all(&mut self, data: &[u8]) -> Result<()> {
+    pub fn write_all(&mut self, data: &[u8]) -> Result<()> {
         self.writer.write_all(data)?;
         self.writer.flush()?;
         Ok(())
     }
 
-    fn write_str(&mut self, s: &str) -> Result<()> {
+    pub fn write_str(&mut self, s: &str) -> Result<()> {
         self.write_all(s.as_bytes())
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+        self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        Ok(())
+    }
+
+    pub fn clone_reader(&mut self) -> Result<Box<dyn Read + Send>> {
+        self.master.try_clone_reader().context("try_clone_reader")
+    }
+
+    #[cfg(unix)]
+    pub fn master_fd(&self) -> Result<i32> {
+        self.master
+            .as_raw_fd()
+            .ok_or_else(|| anyhow!("MasterPty::as_raw_fd() not available"))
     }
 
     fn wait_for_marker(&mut self, marker: &str, timeout: Duration) -> Result<String> {
@@ -267,7 +288,7 @@ impl PtyHandle {
         Ok(())
     }
 
-    fn debug_roundtrip_echo(&mut self, timeout: Duration) -> Result<String> {
+    pub fn debug_roundtrip_echo(&mut self, timeout: Duration) -> Result<String> {
         let token = unique_token("echo");
         let marker = format!("__SYNK_ECHO__:{token}");
         self.write_str(&format!("echo {marker}\r\n"))?;
@@ -313,7 +334,8 @@ impl PtyHandle {
 
 pub struct ProcessPool {
     idle_pool: VecDeque<PtyHandle>,
-    active: HashMap<usize, PtyHandle>,
+    // Session key -> pid (debug/stats only). Actual handles are owned by SessionManager.
+    active: HashMap<usize, Option<u32>>,
     config: PoolConfig,
     spawning_idle: usize,
 }
@@ -375,7 +397,7 @@ impl ProcessPool {
         });
     }
 
-    pub fn claim(pool: SharedProcessPool, session_key: usize) -> Result<()> {
+    pub fn claim(pool: SharedProcessPool, session_key: usize) -> Result<PtyHandle> {
         {
             let guard = pool.lock().expect("pool mutex poisoned");
             if guard.active.contains_key(&session_key) {
@@ -384,7 +406,7 @@ impl ProcessPool {
         }
 
         // Fast path: take from idle if available.
-        let claimed_from_idle = {
+        let claimed_from_idle: Option<PtyHandle> = {
             let mut guard = pool.lock().expect("pool mutex poisoned");
 
             if guard.active.len() >= guard.config.max_active {
@@ -394,20 +416,23 @@ impl ProcessPool {
                 ));
             }
 
+            let mut claimed: Option<PtyHandle> = None;
             while let Some(mut h) = guard.idle_pool.pop_front() {
                 if h.age() > guard.config.max_pty_age {
                     h.kill();
                     continue;
                 }
                 h.state = PtyState::Active;
-                guard.active.insert(session_key, h);
+                guard.active.insert(session_key, h.pid);
+                claimed = Some(h);
                 break;
             }
-
-            guard.active.contains_key(&session_key)
+            claimed
         };
 
-        if !claimed_from_idle {
+        let handle = if let Some(h) = claimed_from_idle {
+            h
+        } else {
             // On-demand spawn fallback.
             let config = { pool.lock().expect("pool mutex poisoned").config.clone() };
             let mut h = spawn_shell_pty(&config)?;
@@ -416,35 +441,37 @@ impl ProcessPool {
             h.state = PtyState::Active;
 
             let mut guard = pool.lock().expect("pool mutex poisoned");
-            guard.active.insert(session_key, h);
-        }
+            guard.active.insert(session_key, h.pid);
+            h
+        };
 
         schedule_refill_if_needed(pool);
-        Ok(())
+        Ok(handle)
     }
 
-    pub fn release(pool: SharedProcessPool, session_key: usize) -> Result<()> {
-        Self::release_inner(pool, session_key, false)
+    pub fn release(pool: SharedProcessPool, session_key: usize, handle: PtyHandle) -> Result<()> {
+        Self::release_inner(pool, session_key, handle, false)
     }
 
-    pub fn recycle(pool: SharedProcessPool, session_key: usize) -> Result<()> {
+    pub fn recycle(pool: SharedProcessPool, session_key: usize, handle: PtyHandle) -> Result<()> {
         // Explicit API for the Task 1.2 deliverable.
         // This forces the recycle path even if recycle is disabled in the global config.
-        Self::release_inner(pool, session_key, true)
+        Self::release_inner(pool, session_key, handle, true)
     }
 
     fn release_inner(
         pool: SharedProcessPool,
         session_key: usize,
+        mut handle: PtyHandle,
         force_recycle: bool,
     ) -> Result<()> {
-        let (mut handle, config) = {
+        let config = {
             let mut guard = pool.lock().expect("pool mutex poisoned");
-            let h = guard
+            let _pid = guard
                 .active
                 .remove(&session_key)
                 .ok_or_else(|| anyhow!("unknown session_key {session_key}"))?;
-            (h, guard.config.clone())
+            guard.config.clone()
         };
 
         let should_recycle =
@@ -480,7 +507,7 @@ impl ProcessPool {
 
     pub fn shutdown(pool: SharedProcessPool) -> Result<()> {
         // Drain all handles out of the pool so we don't hold the mutex while waiting for exits.
-        let (idle, active) = {
+        let (idle, active_pids) = {
             let mut guard = pool.lock().expect("pool mutex poisoned");
             (
                 std::mem::take(&mut guard.idle_pool),
@@ -491,8 +518,20 @@ impl ProcessPool {
         for mut h in idle {
             h.kill();
         }
-        for (_k, mut h) in active {
-            h.kill();
+
+        // Best-effort kill of active sessions by pid. SessionManager owns the handles,
+        // so we don't have access to portable-pty Child handles here.
+        for (_k, pid) in active_pids {
+            #[cfg(unix)]
+            if let Some(pid) = pid {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+                thread::sleep(Duration::from_millis(50));
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
         }
 
         Ok(())
@@ -500,27 +539,9 @@ impl ProcessPool {
 
     pub fn debug_roundtrip(pool: SharedProcessPool) -> Result<String> {
         let session_key = 9999usize;
-        Self::claim(pool.clone(), session_key)?;
-
-        let output = {
-            // Avoid holding the pool mutex while we perform blocking I/O.
-            let mut handle = {
-                let mut guard = pool.lock().expect("pool mutex poisoned");
-                guard
-                    .active
-                    .remove(&session_key)
-                    .ok_or_else(|| anyhow!("debug session handle missing"))?
-            };
-
-            let out = handle.debug_roundtrip_echo(Duration::from_secs(2))?;
-
-            let mut guard = pool.lock().expect("pool mutex poisoned");
-            guard.active.insert(session_key, handle);
-            out
-        };
-
-        // The above returns captured output; now release.
-        Self::release(pool, session_key)?;
+        let mut handle = Self::claim(pool.clone(), session_key)?;
+        let output = handle.debug_roundtrip_echo(Duration::from_secs(2))?;
+        Self::release(pool, session_key, handle)?;
         Ok(output)
     }
 }

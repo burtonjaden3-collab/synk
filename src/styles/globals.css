@@ -32,3 +32,15 @@ body {
   font-family: "Geist Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
+.synk-xterm {
+  /* xterm ships its own layout; this keeps it pinned and non-janky in flex/grid. */
+  height: 100%;
+}
+
+.synk-xterm .xterm {
+  height: 100%;
+}
+
+.synk-xterm .xterm-viewport {
+  scrollbar-color: var(--border) transparent;
+}
