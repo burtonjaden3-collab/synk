@@ -23,7 +23,10 @@ pub fn run() {
     tauri::Builder::default()
         .manage(pool)
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![debug_pool_stats, debug_pool_roundtrip])
+        .invoke_handler(tauri::generate_handler![
+            debug_pool_stats,
+            debug_pool_roundtrip
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

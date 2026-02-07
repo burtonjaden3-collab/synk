@@ -34,7 +34,8 @@ impl SessionManager {
         }
 
         ProcessPool::claim(self.pool.clone(), session_id)?;
-        self.sessions.insert(session_id, SessionRecord { session_id });
+        self.sessions
+            .insert(session_id, SessionRecord { session_id });
         Ok(session_id)
     }
 

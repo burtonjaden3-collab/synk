@@ -16,13 +16,13 @@ pub struct PoolConfig {
     pub recycle_enabled: bool,    // default: true
     pub max_pty_age: Duration,    // default: 30 minutes
 
-    pub warmup_delay: Duration,                 // default: 100ms between spawns
-    pub warmup_timeout: Duration,               // default: 5s
-    pub recycle_ready_timeout: Duration,         // default: 2s
-    pub refill_after_claim_delay: Duration,      // default: 100ms
-    pub spawn_shell_login_arg: Option<String>,   // default: Some("--login")
-    pub default_shell: String,                  // default: $SHELL or /bin/bash
-    pub default_pty_size: PtySize,              // default: 80x24
+    pub warmup_delay: Duration,          // default: 100ms between spawns
+    pub warmup_timeout: Duration,        // default: 5s
+    pub recycle_ready_timeout: Duration, // default: 2s
+    pub refill_after_claim_delay: Duration, // default: 100ms
+    pub spawn_shell_login_arg: Option<String>, // default: Some("--login")
+    pub default_shell: String,           // default: $SHELL or /bin/bash
+    pub default_pty_size: PtySize,       // default: 80x24
 }
 
 impl Default for PoolConfig {
@@ -83,7 +83,9 @@ impl PtyHandle {
     }
 
     fn kill(&mut self) {
-        let _ = self.child.kill();
+        // Best-effort graceful termination on unix, with a hard kill fallback.
+        // Matches Task 1.2: SIGTERM then SIGKILL after ~3s.
+        self.terminate(Duration::from_secs(3));
         self.state = PtyState::Dead;
     }
 
@@ -114,10 +116,7 @@ impl PtyHandle {
                 .as_raw_fd()
                 .ok_or_else(|| anyhow!("MasterPty::as_raw_fd() not available"))?;
 
-            let mut reader = self
-                .master
-                .try_clone_reader()
-                .context("try_clone_reader")?;
+            let mut reader = self.master.try_clone_reader().context("try_clone_reader")?;
 
             let start = Instant::now();
             let mut captured = String::new();
@@ -142,7 +141,7 @@ impl PtyHandle {
                         .context("poll(master_fd)");
                 }
                 if rc == 0 {
-                    break; // timed out
+                    continue; // keep waiting until overall timeout expires
                 }
 
                 if (pfd.revents & libc::POLLIN) == 0 {
@@ -165,6 +164,82 @@ impl PtyHandle {
         }
     }
 
+    fn wait_for_ready(&mut self, marker: &str, timeout: Duration) -> Result<String> {
+        #[cfg(not(unix))]
+        {
+            let _ = marker;
+            let _ = timeout;
+            return Err(anyhow!(
+                "PTY readiness polling is only implemented for unix targets"
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            let fd = self
+                .master
+                .as_raw_fd()
+                .ok_or_else(|| anyhow!("MasterPty::as_raw_fd() not available"))?;
+
+            let mut reader = self.master.try_clone_reader().context("try_clone_reader")?;
+
+            let start = Instant::now();
+            let mut captured = String::new();
+
+            while start.elapsed() < timeout {
+                let remaining = timeout.saturating_sub(start.elapsed());
+                let timeout_ms: i32 = remaining
+                    .as_millis()
+                    .min(i32::MAX as u128)
+                    .try_into()
+                    .unwrap_or(i32::MAX);
+
+                let mut pfd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+
+                let rc = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, timeout_ms) };
+                if rc < 0 {
+                    return Err(anyhow!(std::io::Error::last_os_error()))
+                        .context("poll(master_fd)");
+                }
+                if rc == 0 {
+                    continue;
+                }
+
+                if (pfd.revents & libc::POLLIN) == 0 {
+                    continue;
+                }
+
+                let mut buf = [0u8; 4096];
+                let n = reader.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+
+                captured.push_str(&String::from_utf8_lossy(&buf[..n]));
+
+                // Avoid unbounded growth if a misbehaving shell spews output.
+                const CAPTURE_MAX: usize = 1024 * 1024; // 1 MiB
+                if captured.len() > CAPTURE_MAX {
+                    captured.drain(..captured.len().saturating_sub(CAPTURE_MAX));
+                }
+
+                if captured.contains(marker) {
+                    return Ok(captured);
+                }
+                if tail_looks_like_prompt(&captured) {
+                    return Ok(captured);
+                }
+            }
+
+            Err(anyhow!("timeout waiting for readiness"))
+                .with_context(|| format!("marker={marker} timeout={timeout:?}"))
+        }
+    }
+
     fn send_ready_marker(&mut self, token: &str) -> Result<String> {
         // Use %s so the exact "__SYNK_READY__:<token>" does not appear in the echoed input.
         let cmd = format!("printf \"__SYNK_READY__:%s\\\\n\" \"{token}\"\r\n");
@@ -175,7 +250,7 @@ impl PtyHandle {
     fn warm_to_idle(&mut self, token: &str, timeout: Duration) -> Result<()> {
         self.state = PtyState::Warming;
         let marker = self.send_ready_marker(token)?;
-        let _ = self.wait_for_marker(&marker, timeout)?;
+        let _ = self.wait_for_ready(&marker, timeout)?;
         self.state = PtyState::Idle;
         Ok(())
     }
@@ -184,10 +259,10 @@ impl PtyHandle {
         self.state = PtyState::Recycling;
         // Best-effort cleanup; failures are handled by timeout/kill path in caller.
         let _ = self.write_all(b"\x03"); // Ctrl+C
-        let _ = self.write_str("cd ~\r\nclear\r\n");
+        let _ = self.write_str("cd ~\r\nclear\r\nreset\r\n");
 
         let marker = self.send_ready_marker(token)?;
-        let _ = self.wait_for_marker(&marker, timeout)?;
+        let _ = self.wait_for_ready(&marker, timeout)?;
         self.state = PtyState::Idle;
         Ok(())
     }
@@ -197,6 +272,42 @@ impl PtyHandle {
         let marker = format!("__SYNK_ECHO__:{token}");
         self.write_str(&format!("echo {marker}\r\n"))?;
         self.wait_for_marker(&marker, timeout)
+    }
+
+    fn terminate(&mut self, grace: Duration) {
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+
+        let start = Instant::now();
+        while start.elapsed() < grace {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(_) => break,
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+
+        let _ = self.child.kill();
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(500) {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
     }
 }
 
@@ -247,6 +358,11 @@ impl ProcessPool {
                         let mut guard = pool.lock().expect("pool mutex poisoned");
                         if guard.idle_pool.len() < guard.config.max_pool_size {
                             guard.idle_pool.push_back(handle);
+                        } else {
+                            // Avoid leaving an unmanaged child process running.
+                            drop(guard);
+                            let mut h = handle;
+                            h.kill();
                         }
                     }
                     Err(err) => {
@@ -272,7 +388,10 @@ impl ProcessPool {
             let mut guard = pool.lock().expect("pool mutex poisoned");
 
             if guard.active.len() >= guard.config.max_active {
-                return Err(anyhow!("max sessions reached ({})", guard.config.max_active));
+                return Err(anyhow!(
+                    "max sessions reached ({})",
+                    guard.config.max_active
+                ));
             }
 
             while let Some(mut h) = guard.idle_pool.pop_front() {
@@ -305,6 +424,20 @@ impl ProcessPool {
     }
 
     pub fn release(pool: SharedProcessPool, session_key: usize) -> Result<()> {
+        Self::release_inner(pool, session_key, false)
+    }
+
+    pub fn recycle(pool: SharedProcessPool, session_key: usize) -> Result<()> {
+        // Explicit API for the Task 1.2 deliverable.
+        // This forces the recycle path even if recycle is disabled in the global config.
+        Self::release_inner(pool, session_key, true)
+    }
+
+    fn release_inner(
+        pool: SharedProcessPool,
+        session_key: usize,
+        force_recycle: bool,
+    ) -> Result<()> {
         let (mut handle, config) = {
             let mut guard = pool.lock().expect("pool mutex poisoned");
             let h = guard
@@ -314,7 +447,8 @@ impl ProcessPool {
             (h, guard.config.clone())
         };
 
-        let should_recycle = config.recycle_enabled && handle.age() < config.max_pty_age;
+        let should_recycle =
+            (config.recycle_enabled || force_recycle) && handle.age() < config.max_pty_age;
         if should_recycle {
             let token = unique_token("recycle");
             if handle
@@ -326,8 +460,10 @@ impl ProcessPool {
                     if guard.idle_pool.len() < guard.config.max_pool_size {
                         guard.idle_pool.push_back(handle);
                     } else {
-                        // Pool full; drop this handle.
-                        // (writer drop will send EOF; child will be killed on shutdown path if needed)
+                        // Pool full; kill so we don't leave it running unmanaged.
+                        drop(guard);
+                        let mut h = handle;
+                        h.kill();
                     }
                 }
 
@@ -339,6 +475,26 @@ impl ProcessPool {
         // Fall back to killing and letting refill happen if needed.
         handle.kill();
         schedule_refill_if_needed(pool);
+        Ok(())
+    }
+
+    pub fn shutdown(pool: SharedProcessPool) -> Result<()> {
+        // Drain all handles out of the pool so we don't hold the mutex while waiting for exits.
+        let (idle, active) = {
+            let mut guard = pool.lock().expect("pool mutex poisoned");
+            (
+                std::mem::take(&mut guard.idle_pool),
+                std::mem::take(&mut guard.active),
+            )
+        };
+
+        for mut h in idle {
+            h.kill();
+        }
+        for (_k, mut h) in active {
+            h.kill();
+        }
+
         Ok(())
     }
 
@@ -405,9 +561,16 @@ fn schedule_refill_if_needed(pool: SharedProcessPool) {
 
         match spawned {
             Ok(h) => {
-                let desired = guard.config.initial_pool_size.min(guard.config.max_pool_size);
+                let desired = guard
+                    .config
+                    .initial_pool_size
+                    .min(guard.config.max_pool_size);
                 if guard.idle_pool.len() < desired {
                     guard.idle_pool.push_back(h);
+                } else {
+                    drop(guard);
+                    let mut h = h;
+                    h.kill();
                 }
             }
             Err(err) => {
@@ -427,10 +590,7 @@ fn spawn_shell_pty(config: &PoolConfig) -> Result<PtyHandle> {
     }
     cmd.env("TERM", "xterm-256color");
 
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .context("spawn_command")?;
+    let child = pair.slave.spawn_command(cmd).context("spawn_command")?;
     drop(pair.slave);
 
     let writer = pair.master.take_writer().context("take_writer")?;
@@ -453,4 +613,68 @@ fn unique_token(prefix: &str) -> String {
         .unwrap_or(Duration::from_secs(0))
         .as_nanos();
     format!("{prefix}-{nanos}")
+}
+
+fn tail_looks_like_prompt(captured: &str) -> bool {
+    // Best-effort ANSI stripping. The deterministic marker is the primary signal;
+    // this is a fallback for unusual shells/configs.
+    let clean = strip_ansi(captured);
+    let clean_lines = clean.replace('\r', "\n");
+    let tail = clean_lines
+        .lines()
+        .last()
+        .unwrap_or("")
+        .trim_end_matches('\n');
+
+    // Common prompt endings: "$ " (bash), "# " (root), "% " (zsh), "> " (ps-like).
+    tail.ends_with("$ ") || tail.ends_with("# ") || tail.ends_with("% ") || tail.ends_with("> ")
+}
+
+fn strip_ansi(s: &str) -> String {
+    // Minimal ANSI CSI stripping: ESC [ ... <final byte>.
+    // This is intentionally conservative; it doesn't try to handle every sequence.
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\x1b' {
+            out.push(ch);
+            continue;
+        }
+
+        if chars.peek() == Some(&'[') {
+            let _ = chars.next(); // consume '['
+            while let Some(c) = chars.next() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Not CSI: keep the ESC.
+        out.push(ch);
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{strip_ansi, tail_looks_like_prompt};
+
+    #[test]
+    fn strip_ansi_removes_simple_csi() {
+        let s = "hi\x1b[31mred\x1b[0m!";
+        assert_eq!(strip_ansi(s), "hired!");
+    }
+
+    #[test]
+    fn prompt_detection_matches_common_suffixes() {
+        assert!(tail_looks_like_prompt("user@host:~$ "));
+        assert!(tail_looks_like_prompt("root@host:~# "));
+        assert!(tail_looks_like_prompt("zsh% "));
+        assert!(tail_looks_like_prompt("PS> "));
+        assert!(!tail_looks_like_prompt("not a prompt\nhello world\n"));
+    }
 }
