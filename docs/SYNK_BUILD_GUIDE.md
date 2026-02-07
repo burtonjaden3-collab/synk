@@ -54,7 +54,7 @@ src-tauri/src/core/session_manager.rs (new — skeleton, uses pool)
 src-tauri/src/lib.rs                  (module declarations)
 ```
 
-**Acceptance test:** Run the app, verify 2 idle PTY processes exist in the background. Claim one, verify a replacement spawns within 200ms.
+**Acceptance test:** Run the app, verify 2 idle PTY processes exist in the background (Phase 1 ok: temporary debug command). Claim one, verify a replacement spawn is scheduled within ~200ms.
 
 ---
 

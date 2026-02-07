@@ -4,6 +4,10 @@
 ## What to Build
 Implement a pre-warmed PTY process pool in Rust. On app launch, fork 2 idle shell processes. Provide claim/release/recycle lifecycle methods. Replace claimed shells automatically.
 
+## Implementation Choice (Phase 1)
+- Use `portable-pty` for Linux-friendly PTY creation and child process spawning.
+- Use deterministic readiness markers (`__SYNK_READY__:<token>`) and a real timeout (poll the PTY master fd) to avoid blocking forever on reads.
+
 ## Deliverables
 1. `process_pool.rs` — ProcessPool struct with new(), claim(), release(), recycle(), shutdown()
 2. Warm-up detection via deterministic readiness marker (prompt regex as fallback)
@@ -21,7 +25,12 @@ src-tauri/src/lib.rs                  (register core module)
 ```
 
 ## Acceptance Test
-App launches → 2 idle PTY processes running in background. Call claim() → get a shell. Replacement spawn is scheduled within 200ms; pool returns to 2 idle PTYs within the warm-up timeout. Claimed shell responds to stdin/stdout.
+App launches → 2 idle PTY processes running in background.
+
+- Verify pool warmup: invoke a temporary debug command (Phase 1 ok) like `debug_pool_stats` and confirm `idle >= 2`.
+- Call `claim()` → get a shell.
+- Verify a replacement spawn is scheduled within ~200ms and `idle` returns to 2 within the warm-up timeout.
+- Verify claimed shell responds: run a simple `echo` roundtrip (temporary debug command is ok in Phase 1).
 
 ---
 ## SPEC REFERENCE (Read all of this carefully)
@@ -31,7 +40,7 @@ App launches → 2 idle PTY processes running in background. Call claim() → ge
 
 ```rust
 pub struct ProcessPool {
-    idle_pool: Vec<PtyHandle>,       // pre-warmed, waiting to be claimed
+    idle_pool: VecDeque<PtyHandle>,       // pre-warmed, waiting to be claimed (FIFO)
     active: HashMap<usize, PtyHandle>, // session_index → handle
     config: PoolConfig,
     recycler_tx: mpsc::Sender<PtyHandle>,  // channel for returning PTYs
@@ -63,6 +72,8 @@ pub struct PoolConfig {
     pub recycle_enabled: bool,       // default: true
     pub max_pty_age: Duration,       // default: 30 minutes (before forced recycle)
     pub warmup_delay: Duration,      // default: 100ms between spawns
+    pub warmup_timeout: Duration,    // default: 5s (readiness marker must be observed)
+    pub recycle_timeout: Duration,   // default: 2s (recycle readiness check)
 }
 ```
 
