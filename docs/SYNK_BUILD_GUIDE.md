@@ -37,6 +37,12 @@ src/App.tsx, package.json, tailwind.config.js, tsconfig.json
 ```
 
 **Notes:** Agent should create the full directory structure from §14 with empty placeholder files. This prevents future agents from having to guess where things go.
+Also install the Tauri Cargo subcommand first (required for `cargo tauri ...`):
+
+```bash
+cargo install tauri-cli --locked
+cargo tauri --version
+```
 
 ---
 
