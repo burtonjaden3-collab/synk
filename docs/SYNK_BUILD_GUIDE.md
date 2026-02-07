@@ -41,7 +41,7 @@ src/App.tsx, package.json, tailwind.config.js, tsconfig.json
 ---
 
 ### Task 1.2: PTY Process Pool
-**What:** Implement the pre-warmed PTY process pool in Rust. Fork shells, detect prompt readiness, claim/release/recycle lifecycle.
+**What:** Implement the pre-warmed PTY process pool in Rust. Spawn shells, detect deterministic readiness marker (prompt regex only as fallback), claim/release/recycle lifecycle.
 
 **Spec sections:** §22 (PTY Process Pool — full section), §13 (Performance Targets — spawn time, latency)
 
