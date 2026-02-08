@@ -117,7 +117,8 @@ impl Default for AiProvidersDisk {
                 api_key: None,
                 oauth_connected: false,
                 oauth_email: None,
-                default_model: "gpt-4o".to_string(),
+                // Used for Codex panes today (Codex CLI) and as the OpenAI default generally.
+                default_model: "gpt-5.3-codex".to_string(),
             },
             ollama: OllamaDisk::default(),
         }
@@ -294,7 +295,7 @@ pub struct SettingsDisk {
 impl Default for SettingsDisk {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             ai_providers: AiProvidersDisk::default(),
             performance: PerformanceDisk::default(),
             keyboard: KeyboardDisk::default(),
@@ -657,10 +658,35 @@ pub fn settings_get(app: &tauri::AppHandle) -> Result<SettingsView> {
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
 
-    let disk: SettingsDisk = match serde_json::from_str(&text) {
+    let mut disk: SettingsDisk = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(_) => SettingsDisk::default(),
     };
+
+    // Lightweight migrations so defaults improve over time without manual settings edits.
+    // Only overwrite known-previous defaults (so user customizations are preserved).
+    let mut changed = false;
+    if disk.version < 2 {
+        if disk.ai_providers.openai.default_model.trim().is_empty()
+            || disk.ai_providers.openai.default_model == "gpt-4o"
+            || disk.ai_providers.openai.default_model == "o4-mini"
+            || disk.ai_providers.openai.default_model == "o3-mini"
+        {
+            disk.ai_providers.openai.default_model = "gpt-5.3-codex".to_string();
+        }
+        disk.version = 2;
+        changed = true;
+    }
+
+    if changed {
+        // Best-effort persist so next launch sees the migrated defaults.
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(&disk) {
+            let _ = fs::write(&path, format!("{text}\n"));
+        }
+    }
 
     Ok(SettingsView::from(disk))
 }
@@ -675,7 +701,10 @@ pub fn settings_set(app: &tauri::AppHandle, view: SettingsView) -> Result<Settin
     // Normalize via disk schema so missing fields get defaults.
     let mut disk = SettingsDisk::from(view);
     if disk.version == 0 {
-        disk.version = 1;
+        disk.version = 2;
+    }
+    if disk.version < 2 {
+        disk.version = 2;
     }
 
     let text = serde_json::to_string_pretty(&disk).context("serialize settings.json")?;

@@ -114,7 +114,20 @@ export function Sidebar(props: SidebarProps) {
             <section>
               <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">SKILLS</div>
               <div className="mt-2">
-                <SkillsBrowser tauriAvailable={tauriAvailable} projectPath={currentProject?.path ?? null} />
+                <div className="space-y-2">
+                  <SkillsBrowser
+                    tauriAvailable={tauriAvailable}
+                    projectPath={currentProject?.path ?? null}
+                    agentType="claude_code"
+                    title="Claude Skills"
+                  />
+                  <SkillsBrowser
+                    tauriAvailable={tauriAvailable}
+                    projectPath={currentProject?.path ?? null}
+                    agentType="codex"
+                    title="Codex Skills"
+                  />
+                </div>
               </div>
             </section>
 
@@ -123,7 +136,22 @@ export function Sidebar(props: SidebarProps) {
             <section>
               <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">MCP</div>
               <div className="mt-2">
-                <McpManager tauriAvailable={tauriAvailable} projectPath={currentProject?.path ?? null} />
+                <div className="space-y-2">
+                  <McpManager
+                    tauriAvailable={tauriAvailable}
+                    projectPath={currentProject?.path ?? null}
+                    agentType="claude_code"
+                    title="Claude MCP"
+                    allowToggle
+                  />
+                  <McpManager
+                    tauriAvailable={tauriAvailable}
+                    projectPath={currentProject?.path ?? null}
+                    agentType="codex"
+                    title="Codex MCP"
+                    allowToggle={false}
+                  />
+                </div>
               </div>
             </section>
 

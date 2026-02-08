@@ -491,6 +491,18 @@ impl ProcessPool {
         guard.config.clone()
     }
 
+    /// Restores an entry in the "active" tracking map.
+    ///
+    /// This is primarily used to recover accounting after a failed "restart" attempt.
+    pub fn attach_active(pool: SharedProcessPool, session_key: usize, pid: Option<u32>) -> Result<()> {
+        let mut guard = pool.lock().expect("pool mutex poisoned");
+        if guard.active.contains_key(&session_key) {
+            return Err(anyhow!("session_key {session_key} already active"));
+        }
+        guard.active.insert(session_key, pid);
+        Ok(())
+    }
+
     /// Completes a release when the session has already been detached from `active`.
     pub fn release_detached(
         pool: SharedProcessPool,

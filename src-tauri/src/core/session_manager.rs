@@ -147,26 +147,31 @@ impl SessionManager {
                 ))?;
             }
 
-            // Launch the agent CLI inside the claimed shell.
-            if effective_agent_type != AgentType::Terminal {
-                if let Some(cmd) = effective_agent_type.cli_command() {
-                    let full = agent_command_with_model(effective_agent_type, cmd, args.model.as_deref());
-                    handle.write_str(&format!("{full}\r\n"))?;
-                }
-            }
-
-            // Start output pump before we insert the session record, so we can return
-            // a fully-active session.
+            // Start output pump before launching any agent so we can respond to terminal
+            // handshake requests (e.g. DSR) immediately on process start.
             let stop = Arc::new(AtomicBool::new(false));
             let scrollback: Arc<std::sync::Mutex<VecDeque<u8>>> =
                 Arc::new(std::sync::Mutex::new(VecDeque::new()));
             let output_thread = spawn_output_pump(
-                app,
+                app.clone(),
                 session_id,
                 stop.clone(),
                 scrollback.clone(),
                 &mut handle, // used only to clone fd/reader
             )?;
+
+            // Launch the agent CLI inside the claimed shell.
+            if effective_agent_type != AgentType::Terminal {
+                if let Some(cmd) = effective_agent_type.cli_command() {
+                    let full =
+                        agent_command_with_model(effective_agent_type, cmd, args.model.as_deref());
+                    if let Err(err) = handle.write_str(&format!("{full}\r\n")) {
+                        stop.store(true, Ordering::Relaxed);
+                        let _ = output_thread.join();
+                        return Err(err);
+                    }
+                }
+            }
 
             let info = SessionInfo {
                 session_id,
@@ -260,6 +265,120 @@ impl SessionManager {
         });
 
         Ok(())
+    }
+
+    pub fn restart_session(
+        &mut self,
+        app: tauri::AppHandle,
+        session_id: usize,
+        dir: String,
+        branch: Option<String>,
+        model: Option<String>,
+    ) -> Result<SessionInfo> {
+        let dir = dir.trim();
+        if dir.is_empty() {
+            return Err(anyhow!("dir is empty"));
+        }
+
+        let mut rec = self
+            .sessions
+            .remove(&session_id)
+            .ok_or_else(|| anyhow!("unknown session_id {session_id}"))?;
+
+        // Stop old output pump.
+        rec.stop.store(true, Ordering::Relaxed);
+        let _ = rec.output_thread.join();
+
+        // Temporarily detach pool accounting so we can claim a new handle under the same key.
+        let pool = self.pool.clone();
+        let pool_config = ProcessPool::detach_active(pool.clone(), session_id);
+
+        // Try to claim a fresh PTY.
+        let claimed = ProcessPool::claim(pool.clone(), session_id);
+        let mut handle = match claimed {
+            Ok(h) => h,
+            Err(err) => {
+                // Restore accounting and resume output streaming on the existing handle.
+                let _ = ProcessPool::attach_active(pool.clone(), session_id, rec.handle.pid);
+                let stop = Arc::new(AtomicBool::new(false));
+                let output_thread = spawn_output_pump(
+                    app.clone(),
+                    session_id,
+                    stop.clone(),
+                    rec.scrollback.clone(),
+                    &mut rec.handle,
+                )?;
+                rec.stop = stop;
+                rec.output_thread = output_thread;
+                self.sessions.insert(session_id, rec);
+                return Err(err);
+            }
+        };
+
+        let pane_index = rec.info.pane_index;
+        let agent_type = rec.info.agent_type;
+        let project_path = rec.info.project_path.clone();
+
+        // Hand old handle back to the pool in the background (recycle/kill may take time).
+        std::thread::spawn(move || {
+            if let Err(err) = ProcessPool::release_detached(pool, rec.handle, pool_config, false) {
+                eprintln!("session_restart: failed to release old pty: {err:#}");
+            }
+        });
+
+        // Bootstrap new session: env exports + cd.
+        handle.write_str(&format!("export SYNK_SESSION_ID='{}'\r\n", session_id))?;
+        handle.write_str(&format!(
+            "export SYNK_AGENT_TYPE='{}'\r\n",
+            agent_type_to_env_value(agent_type)
+        ))?;
+        handle.write_str(&format!(
+            "export SYNK_PROJECT_PATH='{}'\r\n",
+            shell_single_quote_escape(&project_path)
+        ))?;
+        handle.write_str(&format!("cd '{}'\r\n", shell_single_quote_escape(dir)))?;
+
+        // Relaunch agent CLI (if any).
+        if agent_type != AgentType::Terminal {
+            if let Some(cmd) = agent_type.cli_command() {
+                let full = agent_command_with_model(agent_type, cmd, model.as_deref());
+                handle.write_str(&format!("{full}\r\n"))?;
+            }
+        }
+
+        // Start streaming for the new session.
+        let stop = Arc::new(AtomicBool::new(false));
+        let scrollback: Arc<std::sync::Mutex<VecDeque<u8>>> =
+            Arc::new(std::sync::Mutex::new(VecDeque::new()));
+        let output_thread = spawn_output_pump(
+            app,
+            session_id,
+            stop.clone(),
+            scrollback.clone(),
+            &mut handle,
+        )?;
+
+        let info = SessionInfo {
+            session_id,
+            pane_index,
+            agent_type,
+            project_path,
+            branch,
+            working_dir: Some(dir.to_string()),
+        };
+
+        self.sessions.insert(
+            session_id,
+            SessionRecord {
+                info: info.clone(),
+                handle,
+                stop,
+                output_thread,
+                scrollback,
+            },
+        );
+
+        Ok(info)
     }
 
     pub fn list_sessions(&self) -> Vec<SessionInfo> {
@@ -382,9 +501,194 @@ fn spawn_output_pump(
         let fd = handle.master_fd()?;
         let mut reader = handle.clone_reader()?;
 
+        // Minimal filter for terminal Device Status Report queries.
+        // Some TUIs (including Codex CLI via crossterm) query cursor position via
+        // `ESC [ 6 n` and expect a fast reply. In a webview terminal, the
+        // "terminal replies on stdin" roundtrip can be too slow; answering at the
+        // PTY layer avoids startup crashes.
+        struct DsrFilter {
+            pending: Vec<u8>,
+        }
+
+        impl DsrFilter {
+            fn new() -> Self {
+                Self { pending: Vec::new() }
+            }
+
+            fn flush_pending(&mut self, out: &mut Vec<u8>) {
+                if !self.pending.is_empty() {
+                    out.extend_from_slice(&self.pending);
+                    self.pending.clear();
+                }
+            }
+
+            fn respond(fd: i32, bytes: &[u8]) {
+                // Best-effort: this is small; if we can't write immediately we just drop.
+                let mut off = 0usize;
+                for _ in 0..3 {
+                    while off < bytes.len() {
+                        let rc = unsafe {
+                            libc::write(
+                                fd,
+                                bytes[off..].as_ptr() as *const _,
+                                bytes.len().saturating_sub(off),
+                            )
+                        };
+                        if rc > 0 {
+                            off += rc as usize;
+                            continue;
+                        }
+                        if rc == 0 {
+                            return;
+                        }
+                        let err = std::io::Error::last_os_error();
+                        match err.raw_os_error() {
+                            Some(libc::EINTR) => continue,
+                            Some(errno) if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK => {
+                                // Give the PTY a moment to become writable.
+                                let mut pfd = libc::pollfd {
+                                    fd,
+                                    events: libc::POLLOUT,
+                                    revents: 0,
+                                };
+                                let _ = unsafe {
+                                    libc::poll(&mut pfd as *mut libc::pollfd, 1, 5)
+                                };
+                                break;
+                            }
+                            _ => return,
+                        }
+                    }
+                    if off >= bytes.len() {
+                        return;
+                    }
+                }
+            }
+
+            fn feed(&mut self, fd: i32, input: &[u8], out: &mut Vec<u8>) {
+                for &b in input {
+                    if self.pending.is_empty() {
+                        if b == 0x1b {
+                            self.pending.push(b);
+                            continue;
+                        }
+                        out.push(b);
+                        continue;
+                    }
+
+                    match self.pending.as_slice() {
+                        [0x1b] => {
+                            if b == b'[' {
+                                self.pending.push(b);
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        [0x1b, b'['] => {
+                            if b == b'?' || b == b'5' || b == b'6' {
+                                self.pending.push(b);
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        [0x1b, b'[', b'?'] => {
+                            if b == b'5' || b == b'6' {
+                                self.pending.push(b);
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        // ESC [ 6
+                        [0x1b, b'[', b'6'] => {
+                            if b == b'n' {
+                                Self::respond(fd, b"\x1b[1;1R");
+                                self.pending.clear();
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        // ESC [ 5
+                        [0x1b, b'[', b'5'] => {
+                            if b == b'n' {
+                                Self::respond(fd, b"\x1b[0n");
+                                self.pending.clear();
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        // ESC [ ? 6
+                        [0x1b, b'[', b'?', b'6'] => {
+                            if b == b'n' {
+                                // DECXCPR variant; reply with the private response form.
+                                Self::respond(fd, b"\x1b[?1;1R");
+                                self.pending.clear();
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        // ESC [ ? 5
+                        [0x1b, b'[', b'?', b'5'] => {
+                            if b == b'n' {
+                                // Best-effort: respond with "OK".
+                                Self::respond(fd, b"\x1b[0n");
+                                self.pending.clear();
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        _ => {
+                            // Unknown / too long; flush and restart.
+                            self.flush_pending(out);
+                            if b == 0x1b {
+                                self.pending.push(b);
+                            } else {
+                                out.push(b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let t = thread::spawn(move || {
             const SCROLLBACK_CAP_BYTES: usize = 512 * 1024;
             let mut buf = [0u8; 16 * 1024];
+            let mut dsr = DsrFilter::new();
 
             while !stop.load(Ordering::Relaxed) {
                 let mut pfd = libc::pollfd {
@@ -407,10 +711,16 @@ fn spawn_output_pump(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        let mut filtered: Vec<u8> = Vec::with_capacity(n);
+                        dsr.feed(fd, &buf[..n], &mut filtered);
+                        if filtered.is_empty() {
+                            continue;
+                        }
+
                         // Keep a bounded in-memory scrollback so the UI can restore content
                         // after React unmounts/remounts (e.g. Home -> Workspace navigation).
                         if let Ok(mut sb) = scrollback.lock() {
-                            for &b in &buf[..n] {
+                            for &b in &filtered {
                                 sb.push_back(b);
                             }
                             while sb.len() > SCROLLBACK_CAP_BYTES {
@@ -418,7 +728,7 @@ fn spawn_output_pump(
                             }
                         }
 
-                        let data_b64 = STANDARD.encode(&buf[..n]);
+                        let data_b64 = STANDARD.encode(&filtered);
                         let _ = app.emit(
                             "session:output",
                             SessionOutputEvent {
@@ -485,7 +795,12 @@ fn agent_command_with_model(agent: AgentType, base_cmd: &str, model: Option<&str
     match agent {
         AgentType::ClaudeCode => format!("{base_cmd} --model '{m}'"),
         AgentType::GeminiCli => format!("{base_cmd} --model '{m}'"),
-        AgentType::Codex => format!("{base_cmd} --model '{m}'"),
+        // Codex CLI supports config overrides via `-c key=value` (TOML parsed).
+        // We set both model and reasoning effort so sessions are consistent.
+        // Example from codex help: `-c model="o3"`.
+        AgentType::Codex => format!(
+            "{base_cmd} -c 'model=\"{m}\"' -c 'model_reasoning_effort=\"high\"'"
+        ),
         AgentType::Terminal => base_cmd.to_string(),
     }
 }

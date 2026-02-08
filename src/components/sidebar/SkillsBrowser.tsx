@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { skillsDiscover, skillsSetEnabled } from "../../lib/tauri-api";
-import type { SkillInfo, SkillsDiscoveryResult } from "../../lib/types";
+import { skillsDiscoverForAgent, skillsSetEnabledForAgent } from "../../lib/tauri-api";
+import type { AgentType, SkillInfo, SkillsDiscoveryResult } from "../../lib/types";
 
 type SkillsBrowserProps = {
   tauriAvailable: boolean;
   projectPath: string | null;
+  agentType: AgentType;
+  title: string;
 };
 
 function descFor(skill: SkillInfo): string {
@@ -16,19 +18,19 @@ function descFor(skill: SkillInfo): string {
 }
 
 export function SkillsBrowser(props: SkillsBrowserProps) {
-  const { tauriAvailable, projectPath } = props;
+  const { tauriAvailable, projectPath, agentType, title } = props;
 
   const [data, setData] = useState<SkillsDiscoveryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!tauriAvailable) return;
     setError(null);
     setLoading(true);
     try {
-      const next = await skillsDiscover(projectPath);
+      const next = await skillsDiscoverForAgent(projectPath, agentType);
       setData(next);
     } catch (e) {
       setError(String(e));
@@ -60,7 +62,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
         >
           <div className="font-mono text-[11px] text-text-secondary">{open ? "▾" : "▸"}</div>
           <div className="min-w-0">
-            <div className="truncate text-xs font-semibold text-text-primary">Skills</div>
+            <div className="truncate text-xs font-semibold text-text-primary">{title}</div>
             <div className="truncate font-mono text-[10px] text-text-secondary">
               {installed.length > 0 ? (
                 <span>
@@ -113,7 +115,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
           <div className="mt-2 space-y-1">
             {installed.length === 0 ? (
               <div className="rounded-lg border border-border bg-bg-tertiary px-2 py-2 text-[11px] text-text-secondary">
-                No skills found in <span className="font-mono">~/.claude</span>.
+                No skills detected for <span className="font-mono">{agentType}</span>.
               </div>
             ) : (
               installed.map((s) => (
@@ -163,7 +165,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
                         };
                       });
                       try {
-                        await skillsSetEnabled(s.name, nextEnabled, s.path, s.description ?? null);
+                        await skillsSetEnabledForAgent(agentType, s.name, nextEnabled, s.path, s.description ?? null);
                       } catch (err) {
                         setError(String(err));
                         refresh().catch(() => {});
@@ -179,7 +181,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
           {recommended.length > 0 ? (
             <details className="mt-3 rounded-lg border border-border bg-bg-tertiary px-2 py-2">
               <summary className="cursor-pointer select-none text-[10px] font-semibold tracking-[0.14em] text-text-secondary">
-                PROJECT RECOMMENDED (CLAUDE.md)
+                PROJECT RECOMMENDED
               </summary>
               <div className="mt-2 flex flex-wrap gap-1">
                 {recommended.map((name) => (
@@ -195,7 +197,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
           ) : null}
 
           <div className="mt-2 truncate font-mono text-[10px] text-text-secondary" title={data?.settingsPath ?? ""}>
-            Config: {data?.settingsPath ?? "~/.claude/settings.json"}
+            Config: {data?.settingsPath ?? "(unknown)"}
           </div>
         </div>
       </div>

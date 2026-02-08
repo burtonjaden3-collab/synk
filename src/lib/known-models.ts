@@ -4,7 +4,8 @@ import type { AiProviderId } from "./types";
 // This is intentionally small and should match models we already reference elsewhere (defaults/pricing).
 export const KNOWN_MODELS: Record<AiProviderId, string[]> = {
   anthropic: ["claude-sonnet-4-5-20250929", "claude-opus-4-6", "claude-haiku-4-5"],
-  openai: ["gpt-4o", "o3-mini"],
+  // Note: Codex CLI uses its own model IDs; we still keep them here so the Settings picker is useful.
+  openai: ["gpt-5.3-codex", "gpt-4o", "o4-mini", "o3-mini"],
   google: ["gemini-2.0-flash", "gemini-2.5-pro"],
   // Ollama is user/local-dependent; keep a couple of common examples.
   ollama: ["llama3.1", "qwen2.5-coder", "mistral"],
@@ -24,4 +25,3 @@ export function mergeModelLists(primary: string[], fallback: string[]): string[]
   }
   return out;
 }
-

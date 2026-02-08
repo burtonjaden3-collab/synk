@@ -43,6 +43,7 @@ import {
 import { SessionGrid } from "./SessionGrid";
 import { Sidebar } from "../sidebar/Sidebar";
 import { BottomDrawer } from "../drawer/BottomDrawer";
+import { defaultAppSettings } from "../../lib/default-settings";
 
 type OutputHandler = (dataB64: string) => void;
 
@@ -55,7 +56,6 @@ export function Workspace() {
   const settings = useAppStore((s) => s.settings);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
-  const [projectPath, setProjectPath] = useState(() => currentProject?.path ?? ".");
   const [agentType, setAgentType] = useState<AgentType>("terminal");
   const [detectedAgents, setDetectedAgents] = useState<Record<AgentType, DetectedAgent> | null>(null);
   const [mode, setMode] = useState<InputMode>("navigation");
@@ -75,6 +75,15 @@ export function Workspace() {
   const escapeTimerRef = useRef<number | null>(null);
   const autosaveInFlightRef = useRef(false);
   const autosaveDebounceRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const restoreRunIdRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const refreshSessions = async () => {
     const list = await sessionList();
@@ -114,10 +123,6 @@ export function Workspace() {
   }, [tauriAvailable]);
 
   useEffect(() => {
-    if (currentProject?.path) setProjectPath(currentProject.path);
-  }, [currentProject?.path]);
-
-  useEffect(() => {
     if (!tauriAvailable) return;
     if (!currentProject?.path) {
       setProjectConfig(null);
@@ -139,10 +144,7 @@ export function Workspace() {
     [sessions],
   );
 
-  const effectiveProjectPath = useMemo(
-    () => currentProject?.path ?? projectPath,
-    [currentProject?.path, projectPath],
-  );
+  const effectiveProjectPath = useMemo(() => currentProject?.path ?? ".", [currentProject?.path]);
 
   const autoSaveEnabled = settings?.session?.autoSave ?? true;
   const autoSaveIntervalMs = (settings?.session?.autoSaveIntervalSeconds ?? 60) * 1000;
@@ -151,11 +153,10 @@ export function Workspace() {
   const dimUnfocused = settings?.ui?.dimUnfocusedPanes ?? true;
   const dimOpacity = settings?.ui?.unfocusedOpacity ?? 0.7;
   const sidebarWidth = settings?.ui?.sidebarWidth ?? 280;
-  const models = settings?.aiProviders ?? null;
+  const models = settings?.aiProviders ?? defaultAppSettings().aiProviders;
 
   const modelForAgent = useMemo(() => {
     return (t: AgentType): string | undefined => {
-      if (!models) return undefined;
       switch (t) {
         case "claude_code":
           return models.anthropic.defaultModel || undefined;
@@ -176,7 +177,9 @@ export function Workspace() {
     if (!pendingSessionRestoreId) return;
     if (!effectiveProjectPath) return;
 
-    let cancelled = false;
+    const runId = restoreRunIdRef.current + 1;
+    restoreRunIdRef.current = runId;
+    const isCurrent = () => mountedRef.current && restoreRunIdRef.current === runId;
 
     (async () => {
       setError(null);
@@ -184,7 +187,7 @@ export function Workspace() {
       setBusy(true);
 
       const snap = await sessionSnapshotLoad(pendingSessionRestoreId);
-      if (cancelled) return;
+      if (!isCurrent()) return;
       if (snap.projectPath !== effectiveProjectPath) {
         throw new Error(
           `Snapshot projectPath mismatch: ${snap.projectPath} (snapshot) vs ${effectiveProjectPath} (current)`,
@@ -222,24 +225,25 @@ export function Workspace() {
       }
 
       await refreshSessions();
-      if (cancelled) return;
+      if (!isCurrent()) return;
 
       setNotice(`Session restored: ${panes.length} panes`);
       setPendingSessionRestoreId(null);
     })()
       .catch((e) => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setError(String(e));
         setNotice(null);
         setPendingSessionRestoreId(null);
       })
       .finally(() => {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setBusy(false);
       });
 
     return () => {
-      cancelled = true;
+      // No-op: dependency changes can be triggered by this effect itself
+      // (e.g. `setPendingSessionRestoreId(null)`). We use a runId gate instead.
     };
   }, [
     tauriAvailable,
@@ -532,6 +536,13 @@ export function Workspace() {
   const sessionCount = orderedSessions.length;
   const maxSessionsUi = settings?.performance?.maxActiveSessions ?? 12;
   const canAdd = useMemo(() => sessionCount < maxSessionsUi && !busy, [sessionCount, maxSessionsUi, busy]);
+  const addDisabledReason = useMemo(() => {
+    if (!tauriAvailable) return "Requires Tauri (run `npm run tauri dev`).";
+    if (busy) return "Busy (restoring/saving). Wait for it to finish.";
+    if (sessionCount >= maxSessionsUi)
+      return `Max sessions reached (${maxSessionsUi}). Close a pane or increase Settings -> Performance -> Max active sessions.`;
+    return "";
+  }, [tauriAvailable, busy, sessionCount, maxSessionsUi]);
 
   return (
     <div className="flex h-full min-h-full flex-col bg-bg-primary text-text-primary">
@@ -545,14 +556,15 @@ export function Workspace() {
         >
           Home
         </button>
-        <label className="flex items-center gap-2 text-xs text-text-secondary">
-          Project
-          <input
-            className="h-9 w-64 rounded-lg border border-border bg-bg-primary px-3 text-sm text-text-primary"
-            value={projectPath}
-            onChange={(e) => setProjectPath(e.target.value)}
-          />
-        </label>
+        <div className="flex items-center gap-2 text-xs text-text-secondary">
+          <div className="text-xs font-medium text-text-secondary">Project</div>
+          <div
+            className="max-w-[340px] truncate rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm font-semibold text-text-primary"
+            title={currentProject?.path ?? ""}
+          >
+            {currentProject?.name ?? "(unknown)"}
+          </div>
+        </div>
         <label className="flex items-center gap-2 text-xs text-text-secondary">
           Agent
           <select
@@ -573,14 +585,19 @@ export function Workspace() {
           </select>
         </label>
         <button
-          className="ml-2 h-9 rounded-lg border border-border bg-bg-primary px-3 text-sm font-medium disabled:opacity-50"
+          className="ml-2 h-9 rounded-lg border border-border bg-bg-primary px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!tauriAvailable || !canAdd}
+          title={addDisabledReason || "Add a new session pane"}
           onClick={async () => {
             setError(null);
             setNotice(null);
             setBusy(true);
             try {
-              const resp = await sessionCreate({ agentType, projectPath, model: modelForAgent(agentType) });
+              const resp = await sessionCreate({
+                agentType,
+                projectPath: effectiveProjectPath,
+                model: modelForAgent(agentType),
+              });
               if (resp.warning) {
                 setNotice(resp.warning);
               }

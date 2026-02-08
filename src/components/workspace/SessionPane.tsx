@@ -27,6 +27,40 @@ function decodeB64ToBytes(dataB64: string) {
   return out;
 }
 
+function basename(p: string) {
+  const clean = p.replace(/\\/g, "/").replace(/\/+$/, "");
+  const parts = clean.split("/");
+  return parts[parts.length - 1] || clean;
+}
+
+function locationBadgeFor(session: SessionInfo): { label: string; title: string; className: string } {
+  const wd = session.workingDir ?? "";
+  const root = session.projectPath ?? "";
+  const inRoot = !!wd && !!root && (wd === root || wd.startsWith(`${root}/`));
+
+  if (inRoot) {
+    return {
+      label: "root",
+      title: wd || root || "project root",
+      className: "bg-bg-primary text-text-secondary border-border",
+    };
+  }
+
+  if (session.branch) {
+    return {
+      label: `wt:${session.branch}`,
+      title: wd || "worktree",
+      className: "bg-accent-blue/10 text-accent-blue border-accent-blue/35",
+    };
+  }
+
+  return {
+    label: `dir:${wd ? basename(wd) : "unknown"}`,
+    title: wd || "directory",
+    className: "bg-bg-primary text-text-secondary border-border",
+  };
+}
+
 export function SessionPane(props: {
   session: SessionInfo;
   mode: InputMode;
@@ -53,6 +87,7 @@ export function SessionPane(props: {
   const resizeTimerRef = useRef<number | null>(null);
 
   const badge = useMemo(() => agentBadge(session.agentType), [session.agentType]);
+  const loc = useMemo(() => locationBadgeFor(session), [session.projectPath, session.workingDir, session.branch]);
   const title = useMemo(() => `Pane ${session.paneIndex + 1}`, [session.paneIndex]);
 
   useEffect(() => {
@@ -205,6 +240,14 @@ export function SessionPane(props: {
           {badge.label}
         </div>
         <div className="text-xs font-medium text-text-primary">{title}</div>
+        <div
+          className={["max-w-[40%] truncate rounded-md border px-2 py-0.5 font-mono text-[10px]", loc.className].join(
+            " ",
+          )}
+          title={loc.title}
+        >
+          {loc.label}
+        </div>
         <div className="ml-auto flex items-center gap-2">
           <div className="h-2 w-2 rounded-full bg-accent-green" title="active" />
           <button

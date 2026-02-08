@@ -4,6 +4,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { HomeScreen } from "./components/home/HomeScreen";
 import { Workspace } from "./components/workspace/Workspace";
 import { Settings } from "./components/shared/Settings";
+import { ErrorBoundary } from "./components/shared/ErrorBoundary";
 import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { useAppStore } from "./lib/store";
 import { onboardingIsFirstRun, settingsGet } from "./lib/tauri-api";
@@ -98,14 +99,14 @@ function App() {
   }
 
   return (
-    <>
+    <ErrorBoundary>
       {currentProject ? <Workspace /> : <HomeScreen />}
       <Settings
         open={firstRun === false && settingsOpen}
         tauriAvailable={tauriAvailable}
         onClose={() => setSettingsOpen(false)}
       />
-    </>
+    </ErrorBoundary>
   );
 }
 

@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { onGitEvent } from "../../lib/tauri-api";
 import type { GitEvent, GitEventType } from "../../lib/types";
+import { useAppStore } from "../../lib/store";
+
+const EMPTY_EVENTS: GitEvent[] = [];
 
 function iconFor(t: GitEventType) {
   switch (t) {
@@ -75,12 +78,26 @@ function describe(e: GitEvent) {
 
 export function GitActivityFeed(props: { tauriAvailable: boolean; projectPath: string | null }) {
   const { tauriAvailable, projectPath } = props;
-  const [events, setEvents] = useState<GitEvent[]>([]);
+  const eventsSelector = useCallback(
+    (s: ReturnType<typeof useAppStore.getState>) => {
+      if (!projectPath) return EMPTY_EVENTS;
+      return s.gitEventsByProject[projectPath] ?? EMPTY_EVENTS;
+    },
+    [projectPath],
+  );
+  const events = useAppStore(eventsSelector);
+  const appendGitEvent = useAppStore((s) => s.appendGitEvent);
+  const clearGitEvents = useAppStore((s) => s.clearGitEvents);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
   const [unseen, setUnseen] = useState(0);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(stickToBottom);
+
+  useEffect(() => {
+    stickToBottomRef.current = stickToBottom;
+  }, [stickToBottom]);
 
   useEffect(() => {
     if (!tauriAvailable) return;
@@ -90,15 +107,8 @@ export function GitActivityFeed(props: { tauriAvailable: boolean; projectPath: s
     onGitEvent((ev) => {
       if (ev.projectPath !== projectPath) return;
 
-      setEvents((prev) => {
-        // Basic de-dupe by id.
-        if (prev.some((p) => p.id === ev.id)) return prev;
-        const next = [...prev, ev];
-        // Keep bounded to avoid unbounded memory growth.
-        return next.length > 400 ? next.slice(next.length - 400) : next;
-      });
-
-      setUnseen((n) => (stickToBottom ? 0 : n + 1));
+      appendGitEvent(projectPath, ev);
+      setUnseen((n) => (stickToBottomRef.current ? 0 : n + 1));
     }).then((fn) => {
       unlisten = fn;
     });
@@ -106,7 +116,7 @@ export function GitActivityFeed(props: { tauriAvailable: boolean; projectPath: s
     return () => {
       unlisten?.();
     };
-  }, [tauriAvailable, projectPath, stickToBottom]);
+  }, [tauriAvailable, projectPath, appendGitEvent]);
 
   useEffect(() => {
     if (!stickToBottom) return;
@@ -150,24 +160,40 @@ export function GitActivityFeed(props: { tauriAvailable: boolean; projectPath: s
         <div className="text-xs font-semibold tracking-tight text-text-secondary">
           Live events ({events.length})
         </div>
-        {!stickToBottom && unseen > 0 ? (
+        <div className="flex items-center gap-2">
+          {!stickToBottom && unseen > 0 ? (
+            <button
+              type="button"
+              className="rounded-lg border border-accent-blue/40 bg-accent-blue/10 px-2 py-1 text-[11px] font-semibold text-accent-blue hover:bg-accent-blue/15"
+              onClick={() => {
+                const el = scrollRef.current;
+                if (!el) return;
+                el.scrollTop = el.scrollHeight;
+                setStickToBottom(true);
+                setUnseen(0);
+              }}
+              title="Jump to newest"
+            >
+              {unseen} new
+            </button>
+          ) : (
+            <div className="text-[11px] text-text-secondary/70">auto-scroll {stickToBottom ? "on" : "off"}</div>
+          )}
+
           <button
             type="button"
-            className="rounded-lg border border-accent-blue/40 bg-accent-blue/10 px-2 py-1 text-[11px] font-semibold text-accent-blue hover:bg-accent-blue/15"
+            className="rounded-lg border border-border bg-bg-secondary px-2 py-1 text-[11px] font-semibold text-text-secondary hover:bg-bg-hover hover:text-text-primary"
             onClick={() => {
-              const el = scrollRef.current;
-              if (!el) return;
-              el.scrollTop = el.scrollHeight;
-              setStickToBottom(true);
+              if (!projectPath) return;
+              clearGitEvents(projectPath);
+              setSelectedId(null);
               setUnseen(0);
             }}
-            title="Jump to newest"
+            title="Clear events"
           >
-            {unseen} new
+            Clear
           </button>
-        ) : (
-          <div className="text-[11px] text-text-secondary/70">auto-scroll {stickToBottom ? "on" : "off"}</div>
-        )}
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 gap-3">

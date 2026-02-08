@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { mcpDiscover, mcpSetEnabled } from "../../lib/tauri-api";
-import type { McpDiscoveryResult, McpServerInfo, McpServerStatus } from "../../lib/types";
+import { mcpDiscoverForAgent, mcpSetEnabledForAgent } from "../../lib/tauri-api";
+import type { AgentType, McpDiscoveryResult, McpServerInfo, McpServerStatus } from "../../lib/types";
 
 type McpManagerProps = {
   tauriAvailable: boolean;
   projectPath: string | null;
+  agentType: AgentType;
+  title: string;
+  allowToggle?: boolean;
 };
 
 function statusEmoji(status: McpServerStatus): string {
@@ -30,7 +33,7 @@ function subtitleFor(s: McpServerInfo): string {
 }
 
 export function McpManager(props: McpManagerProps) {
-  const { tauriAvailable, projectPath } = props;
+  const { tauriAvailable, projectPath, agentType, title, allowToggle } = props;
 
   const [data, setData] = useState<McpDiscoveryResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -41,7 +44,7 @@ export function McpManager(props: McpManagerProps) {
     setError(null);
     setLoading(true);
     try {
-      const next = await mcpDiscover(projectPath);
+      const next = await mcpDiscoverForAgent(projectPath, agentType);
       setData(next);
     } catch (e) {
       setError(String(e));
@@ -62,7 +65,7 @@ export function McpManager(props: McpManagerProps) {
     <div className="rounded-xl border border-border bg-bg-secondary p-2">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate text-xs font-semibold text-text-primary">MCP Servers</div>
+          <div className="truncate text-xs font-semibold text-text-primary">{title}</div>
           <div className="truncate font-mono text-[10px] text-text-secondary">
             {data?.projectConfigPath ? (
               <>
@@ -71,7 +74,7 @@ export function McpManager(props: McpManagerProps) {
                 <span>{data.globalConfigPath}</span>
               </>
             ) : (
-              <span>{data?.globalConfigPath ?? "~/.claude/mcp.json"}</span>
+              <span>{data?.globalConfigPath ?? "(unknown)"}</span>
             )}
           </div>
         </div>
@@ -104,15 +107,15 @@ export function McpManager(props: McpManagerProps) {
           <div className="rounded-lg border border-border bg-bg-tertiary px-2 py-2 text-[11px] text-text-secondary">
             <div className="text-text-primary">No configured MCP servers detected.</div>
             <div className="mt-1">
-              Synk discovers MCP servers from <span className="font-mono">~/.claude/mcp.json</span> and{" "}
-              <span className="font-mono">{projectPath ? `${projectPath}/.mcp.json` : "{project}/.mcp.json"}</span>,
+              Synk discovers MCP servers for <span className="font-mono">{agentType}</span> via its config,
               plus any running <span className="font-mono">mcp-server*</span> processes.
             </div>
-            <details className="mt-2">
-              <summary className="cursor-pointer select-none font-mono text-[10px] text-text-secondary">
-                example config
-              </summary>
-              <pre className="mt-2 overflow-auto rounded-md border border-border bg-bg-secondary p-2 font-mono text-[10px] text-text-secondary">
+            {agentType === "claude_code" ? (
+              <details className="mt-2">
+                <summary className="cursor-pointer select-none font-mono text-[10px] text-text-secondary">
+                  example config
+                </summary>
+                <pre className="mt-2 overflow-auto rounded-md border border-border bg-bg-secondary p-2 font-mono text-[10px] text-text-secondary">
 {`{
   "servers": {
     "filesystem": {
@@ -123,12 +126,13 @@ export function McpManager(props: McpManagerProps) {
     }
   }
 }`}
-              </pre>
-            </details>
+                </pre>
+              </details>
+            ) : null}
           </div>
         ) : (
           configured.map((s) => {
-            const canToggle = tauriAvailable && !loading && s.source !== "process";
+            const canToggle = (allowToggle ?? true) && tauriAvailable && !loading && s.source !== "process";
             const scope = s.source === "project" ? "project" : "global";
             return (
               <label
@@ -153,7 +157,7 @@ export function McpManager(props: McpManagerProps) {
                       };
                     });
                     try {
-                      await mcpSetEnabled(s.name, nextEnabled, projectPath, scope);
+                      await mcpSetEnabledForAgent(agentType, s.name, nextEnabled, projectPath, scope);
                       refresh().catch(() => {});
                     } catch (err) {
                       setError(String(err));

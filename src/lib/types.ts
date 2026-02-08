@@ -58,7 +58,7 @@ export interface SessionScrollbackResponse {
   dataB64: string;
 }
 
-export type SkillSource = "settings" | "directory";
+export type SkillSource = "settings" | "directory" | "config";
 
 export interface SkillInfo {
   name: string;
@@ -75,7 +75,7 @@ export interface SkillsDiscoveryResult {
   settingsPath: string;
 }
 
-export type McpServerSource = "global" | "project" | "process";
+export type McpServerSource = "global" | "project" | "process" | "codex";
 export type McpServerStatus = "connected" | "starting" | "disconnected" | "disabled";
 
 export interface McpRunningProcess {
@@ -87,7 +87,7 @@ export interface McpServerInfo {
   name: string;
   command?: string | null;
   args: string[];
-  env: Record<string, string>;
+  envKeys: string[];
   enabled: boolean;
   source: McpServerSource;
   configured: boolean;

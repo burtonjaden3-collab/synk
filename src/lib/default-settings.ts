@@ -2,7 +2,7 @@ import type { AppSettings } from "./types";
 
 export function defaultAppSettings(): AppSettings {
   return {
-    version: 1,
+    version: 2,
     aiProviders: {
       default: "anthropic",
       anthropic: {
@@ -24,7 +24,8 @@ export function defaultAppSettings(): AppSettings {
         apiKey: null,
         oauthConnected: false,
         oauthEmail: null,
-        defaultModel: "gpt-4o",
+        // Used for Codex panes today (Codex CLI), and as the default OpenAI model in general.
+        defaultModel: "gpt-5.3-codex",
       },
       ollama: {
         baseUrl: "http://localhost:11434",
@@ -79,4 +80,3 @@ export function defaultAppSettings(): AppSettings {
     },
   };
 }
-

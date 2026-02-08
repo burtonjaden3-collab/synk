@@ -110,6 +110,16 @@ export function sessionWrite(sessionId: SessionId, data: string) {
   return invoke<void>("session_write", { args: { sessionId, data } });
 }
 
+export function sessionCd(sessionId: SessionId, dir: string, branch?: string | null) {
+  return invoke<void>("session_cd", { args: { sessionId, dir, branch: branch ?? null } });
+}
+
+export function sessionRestart(sessionId: SessionId, dir: string, branch?: string | null, model?: string | null) {
+  return invoke<SessionInfo>("session_restart", {
+    args: { sessionId, dir, branch: branch ?? null, model: model ?? null },
+  });
+}
+
 export function sessionResize(sessionId: SessionId, cols: number, rows: number) {
   return invoke<void>("session_resize", { args: { sessionId, cols, rows } });
 }
@@ -129,6 +139,12 @@ export function sessionList() {
 export function gitCreateWorktree(sessionId: SessionId, branch: string, baseBranch?: string | null) {
   return invoke<GitCreateWorktreeResponse>("git_create_worktree", {
     args: { sessionId, branch, baseBranch: baseBranch ?? null },
+  });
+}
+
+export function gitEnsureWorktree(projectPath: string, branch: string, baseBranch?: string | null) {
+  return invoke<GitCreateWorktreeResponse>("git_ensure_worktree", {
+    args: { projectPath, branch, baseBranch: baseBranch ?? null },
   });
 }
 
@@ -234,15 +250,44 @@ export function skillsDiscover(projectPath?: string | null) {
   });
 }
 
-export function skillsSetEnabled(name: string, enabled: boolean, path?: string | null, description?: string | null) {
+export function skillsDiscoverForAgent(projectPath: string | null | undefined, agentType: string) {
+  return invoke<SkillsDiscoveryResult>("skills_discover", {
+    args: { projectPath: projectPath ?? null, agentType },
+  });
+}
+
+export function skillsSetEnabled(
+  name: string,
+  enabled: boolean,
+  path?: string | null,
+  description?: string | null,
+) {
   return invoke<void>("skills_set_enabled", {
     args: { name, enabled, path: path ?? null, description: description ?? null },
+  });
+}
+
+export function skillsSetEnabledForAgent(
+  agentType: string,
+  name: string,
+  enabled: boolean,
+  path?: string | null,
+  description?: string | null,
+) {
+  return invoke<void>("skills_set_enabled", {
+    args: { agentType, name, enabled, path: path ?? null, description: description ?? null },
   });
 }
 
 export function mcpDiscover(projectPath?: string | null) {
   return invoke<McpDiscoveryResult>("mcp_discover", {
     args: { projectPath: projectPath ?? null },
+  });
+}
+
+export function mcpDiscoverForAgent(projectPath: string | null | undefined, agentType: string) {
+  return invoke<McpDiscoveryResult>("mcp_discover", {
+    args: { projectPath: projectPath ?? null, agentType },
   });
 }
 
@@ -254,6 +299,18 @@ export function mcpSetEnabled(
 ) {
   return invoke<void>("mcp_set_enabled", {
     args: { name, enabled, projectPath: projectPath ?? null, scope: scope ?? null },
+  });
+}
+
+export function mcpSetEnabledForAgent(
+  agentType: string,
+  name: string,
+  enabled: boolean,
+  projectPath?: string | null,
+  scope?: "global" | "project" | null,
+) {
+  return invoke<void>("mcp_set_enabled", {
+    args: { agentType, name, enabled, projectPath: projectPath ?? null, scope: scope ?? null },
   });
 }
 

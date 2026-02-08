@@ -747,6 +747,11 @@ impl GitManager {
     // -------------------------------------------------------------------------
 
     pub fn generate_diff(&self, branch: &str, base_branch: &str) -> Result<Vec<FileDiff>> {
+        let raw = self.raw_unified_diff(branch, base_branch)?;
+        Ok(parse_unified_diff(&raw))
+    }
+
+    pub fn raw_unified_diff(&self, branch: &str, base_branch: &str) -> Result<String> {
         let branch = self.normalize_branch(branch)?;
         let base_branch = self.normalize_base_branch(base_branch)?;
 
@@ -766,17 +771,14 @@ impl GitManager {
             );
         }
 
-        let raw = self
-            .run_git(&[
-                "diff",
-                "--no-color",
-                "--no-ext-diff",
-                "--unified=3",
-                &format!("{base_branch}...{branch}"),
-            ])
-            .with_context(|| format!("git diff {base_branch}...{branch}"))?;
-
-        Ok(parse_unified_diff(&raw))
+        self.run_git(&[
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--unified=3",
+            &format!("{base_branch}...{branch}"),
+        ])
+        .with_context(|| format!("git diff {base_branch}...{branch}"))
     }
 
     fn get_conflict_files_in(&self, cwd: &Path) -> Result<Vec<String>> {
@@ -897,6 +899,8 @@ impl GitManager {
                     }
                 } else {
                     let files = self.get_conflict_files_in(&self.project_path)?;
+                    // Don't leave the repo in MERGING state.
+                    let _ = self.run_git_status(&["merge", "--abort"]);
                     MergeResult {
                         success: false,
                         conflict_files: Some(files),
@@ -909,6 +913,8 @@ impl GitManager {
                     .context("git merge --squash")?;
                 if !st.success() {
                     let files = self.get_conflict_files_in(&self.project_path)?;
+                    // Don't leave the repo in MERGING state (squash uses merge machinery).
+                    let _ = self.run_git_status(&["merge", "--abort"]);
                     MergeResult {
                         success: false,
                         conflict_files: Some(files),
@@ -924,29 +930,51 @@ impl GitManager {
                 }
             }
             MergeStrategy::Rebase => {
-                let Some(feature_wt) = self
-                    .find_worktree_for_branch(&branch)?
-                    .or_else(|| Some(self.project_path.clone()))
-                else {
-                    return Err(anyhow::anyhow!(
-                        "could not locate worktree for branch {branch}"
-                    ));
-                };
+                // Prefer the feature branch's worktree (worktree isolation ON).
+                // If we don't have one, fall back to rebasing in the base repo by
+                // temporarily checking out the feature branch (worktree isolation OFF).
+                let feature_wt = self.find_worktree_for_branch(&branch)?;
 
-                // Rebase is executed in the feature branch's worktree (the branch is already checked out there).
-                let st = Command::new("git")
-                    .current_dir(&feature_wt)
-                    .args(["rebase", &base_branch])
-                    .status()
-                    .with_context(|| {
-                        format!("git rebase {base_branch} (in {})", feature_wt.display())
-                    })?;
-                if !st.success() {
-                    let files = self.get_conflict_files_in(&feature_wt)?;
-                    return Ok(MergeResult {
-                        success: false,
-                        conflict_files: Some(files),
-                    });
+                if let Some(dir) = feature_wt {
+                    let st = Command::new("git")
+                        .current_dir(&dir)
+                        .args(["rebase", &base_branch])
+                        .status()
+                        .with_context(|| format!("git rebase {base_branch} (in {})", dir.display()))?;
+                    if !st.success() {
+                        let files = self.get_conflict_files_in(&dir)?;
+                        let _ = Command::new("git").current_dir(&dir).args(["rebase", "--abort"]).status();
+                        return Ok(MergeResult {
+                            success: false,
+                            conflict_files: Some(files),
+                        });
+                    }
+                } else {
+                    // Rebase within the base repo by checking out the feature branch first.
+                    if orig_branch.as_deref() != Some(branch.as_str()) {
+                        self.checkout_branch(&branch)?;
+                    }
+                    let st = self
+                        .run_git_status(&["rebase", &base_branch])
+                        .context("git rebase (in base repo)")?;
+                    if !st.success() {
+                        let files = self.get_conflict_files_in(&self.project_path)?;
+                        let _ = self.run_git_status(&["rebase", "--abort"]);
+                        // Best-effort: restore original branch if possible.
+                        if let Some(orig) = orig_branch.as_deref() {
+                            let _ = self.checkout_branch(orig);
+                        }
+                        return Ok(MergeResult {
+                            success: false,
+                            conflict_files: Some(files),
+                        });
+                    }
+                }
+
+                // Ensure merges apply to base branch, then fast-forward.
+                let cur = self.current_branch()?;
+                if cur.as_deref() != Some(base_branch.as_str()) {
+                    self.checkout_branch(&base_branch)?;
                 }
 
                 let st = self
@@ -967,12 +995,11 @@ impl GitManager {
             }
         };
 
-        // If successful, restore the user's original branch (best-effort).
-        if result.success {
-            if let Some(orig) = orig_branch.as_deref() {
-                if orig != base_branch {
-                    let _ = self.checkout_branch(orig);
-                }
+        // Restore the user's original branch (best-effort). For conflicts we abort above,
+        // so checkout should generally be safe.
+        if let Some(orig) = orig_branch.as_deref() {
+            if self.current_branch().ok().flatten().as_deref() != Some(orig) {
+                let _ = self.checkout_branch(orig);
             }
         }
 
@@ -1185,7 +1212,8 @@ mod tests {
         );
 
         // Clean up merge state so the temp repo can be reused/inspected.
-        git(&repo, &["merge", "--abort"])?;
+        // merge_branch already attempts `git merge --abort` on failure; keep this best-effort.
+        let _ = git(&repo, &["merge", "--abort"]);
         Ok(())
     }
 }

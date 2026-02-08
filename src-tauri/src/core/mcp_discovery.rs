@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use crate::core::agent_detection::AgentType;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +22,9 @@ pub struct McpServerInfo {
     pub name: String,
     pub command: Option<String>,
     pub args: Vec<String>,
-    pub env: HashMap<String, String>,
+    #[serde(skip_serializing)]
+    pub env: HashMap<String, String>, // secrets live here; do not send to frontend
+    pub env_keys: Vec<String>,
     pub enabled: bool,
     pub source: String, // "global" | "project" | "process"
     pub configured: bool,
@@ -53,8 +57,16 @@ fn claude_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".claude"))
 }
 
+fn codex_dir() -> Result<PathBuf> {
+    Ok(home_dir()?.join(".codex"))
+}
+
 fn global_mcp_path() -> Result<PathBuf> {
     Ok(claude_dir()?.join("mcp.json"))
+}
+
+fn codex_config_path() -> Result<PathBuf> {
+    Ok(codex_dir()?.join("config.toml"))
 }
 
 fn project_mcp_path(project_path: &Path) -> PathBuf {
@@ -155,6 +167,22 @@ fn match_process_to_command(cmdline: &str, command: &str) -> bool {
 }
 
 pub fn discover_mcp(project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
+    // Back-compat: default to Claude config.
+    discover_mcp_for_agent(AgentType::ClaudeCode, project_path)
+}
+
+pub fn discover_mcp_agent(agent_type: AgentType, project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
+    discover_mcp_for_agent(agent_type, project_path)
+}
+
+fn discover_mcp_for_agent(agent_type: AgentType, project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
+    match agent_type {
+        AgentType::Codex => discover_codex_mcp(),
+        _ => discover_claude_mcp(project_path),
+    }
+}
+
+fn discover_claude_mcp(project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
     let global_path = global_mcp_path()?;
     let global_text = read_text_if_exists(&global_path)?.unwrap_or_default();
     let global_servers = parse_mcp_config(&global_text);
@@ -181,6 +209,7 @@ pub fn discover_mcp(project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
     let mut servers = Vec::<McpServerInfo>::new();
     for (name, (source, v)) in merged.iter() {
         let (command, args, env, enabled) = parse_server_fields(v);
+        let env_keys = env.keys().cloned().collect::<Vec<_>>();
         let mut running = false;
         let mut pid = None;
         let mut cmdline = None;
@@ -208,6 +237,7 @@ pub fn discover_mcp(project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
             command,
             args,
             env,
+            env_keys,
             enabled,
             source: source.clone(),
             configured: true,
@@ -243,6 +273,7 @@ pub fn discover_mcp(project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
             command: Some(basename.to_string()),
             args: Vec::new(),
             env: HashMap::new(),
+            env_keys: Vec::new(),
             enabled: false,
             source: "process".to_string(),
             configured: false,
@@ -265,6 +296,99 @@ pub fn discover_mcp(project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
         servers,
         global_config_path: global_path.to_string_lossy().to_string(),
         project_config_path: project_path_on_disk.map(|p| p.to_string_lossy().to_string()),
+        running_processes,
+    })
+}
+
+fn discover_codex_mcp() -> Result<McpDiscoveryResult> {
+    let config_path = codex_config_path()?;
+    // Prefer asking Codex for its effective MCP configuration; this matches what the user sees
+    // in `codex mcp list` and avoids guessing based on OS process state (Codex can spawn on demand).
+    #[derive(Debug, Clone, Deserialize)]
+    struct CodexTransport {
+        #[serde(rename = "type")]
+        #[allow(dead_code)]
+        transport_type: String,
+        command: Option<String>,
+        args: Option<Vec<String>>,
+        env: Option<HashMap<String, String>>,
+        env_vars: Option<Vec<String>>,
+        #[allow(dead_code)]
+        cwd: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Deserialize)]
+    struct CodexServer {
+        name: String,
+        enabled: bool,
+        transport: Option<CodexTransport>,
+    }
+
+    fn codex_mcp_list_json() -> Result<Vec<CodexServer>> {
+        let out = Command::new("codex")
+            .args(["mcp", "list", "--json"])
+            .output()
+            .context("codex mcp list --json")?;
+        if !out.status.success() {
+            // If Codex isn't installed or errors, degrade gracefully.
+            return Ok(Vec::new());
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let parsed: Vec<CodexServer> = serde_json::from_str(text.trim()).unwrap_or_default();
+        Ok(parsed)
+    }
+
+    let running_processes = pgrep_running();
+    let mut servers = Vec::<McpServerInfo>::new();
+
+    for s in codex_mcp_list_json()? {
+        let command = s.transport.as_ref().and_then(|t| t.command.clone());
+        let args = s
+            .transport
+            .as_ref()
+            .and_then(|t| t.args.clone())
+            .unwrap_or_default();
+
+        // Do not retain secrets. Only surface key names (and env var passthrough names).
+        let mut env_keys: Vec<String> = Vec::new();
+        if let Some(t) = s.transport.as_ref() {
+            if let Some(env) = t.env.as_ref() {
+                env_keys.extend(env.keys().cloned());
+            }
+            if let Some(vars) = t.env_vars.as_ref() {
+                env_keys.extend(vars.iter().cloned());
+            }
+        }
+        env_keys.sort();
+        env_keys.dedup();
+
+        // Map Codex's notion of "enabled" to our UI status.
+        // We intentionally don't attempt to infer OS process liveness here.
+        let status = if !s.enabled { "disabled" } else { "connected" };
+
+        servers.push(McpServerInfo {
+            name: s.name,
+            command,
+            args,
+            env: HashMap::new(),
+            env_keys,
+            enabled: s.enabled,
+            source: "codex".to_string(),
+            configured: true,
+            running: s.enabled,
+            pid: None,
+            cmdline: None,
+            status: status.to_string(),
+        });
+    }
+
+    // Stable ordering.
+    servers.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(McpDiscoveryResult {
+        servers,
+        global_config_path: config_path.to_string_lossy().to_string(),
+        project_config_path: None,
         running_processes,
     })
 }

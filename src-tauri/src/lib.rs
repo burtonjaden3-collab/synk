@@ -5,7 +5,7 @@ mod events;
 use crate::commands::agents::agents_list;
 use crate::commands::git::{
     git_branches, git_cleanup_orphans, git_create_worktree, git_delete_worktree,
-    git_detect_orphans, git_list_worktrees, git_remove_worktree,
+    git_detect_orphans, git_ensure_worktree, git_list_worktrees, git_remove_worktree,
 };
 use crate::commands::mcp::{mcp_discover, mcp_set_enabled};
 use crate::commands::onboarding::{
@@ -24,8 +24,8 @@ use crate::commands::review::{
     review_resolve_comment, review_set_decision, review_set_merge_strategy, review_set_status,
 };
 use crate::commands::session::{
-    session_create, session_destroy, session_list, session_resize, session_scrollback,
-    session_write,
+    session_cd, session_create, session_destroy, session_list, session_resize,
+    session_restart, session_scrollback, session_write,
 };
 use crate::commands::settings::{
     settings_get, settings_list_provider_models, settings_set, settings_validate_provider_key,
@@ -113,6 +113,7 @@ pub fn run() {
             mcp_discover,
             mcp_set_enabled,
             git_create_worktree,
+            git_ensure_worktree,
             git_remove_worktree,
             git_delete_worktree,
             git_list_worktrees,
@@ -132,6 +133,8 @@ pub fn run() {
             session_create,
             session_destroy,
             session_write,
+            session_cd,
+            session_restart,
             session_resize,
             session_scrollback,
             session_list

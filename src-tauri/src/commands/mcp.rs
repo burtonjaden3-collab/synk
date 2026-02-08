@@ -4,11 +4,14 @@ use tauri::State;
 
 use crate::core::mcp_discovery::{self, McpDiscoveryResult};
 use crate::core::mcp_server::SharedMcpRuntime;
+use crate::core::agent_detection::AgentType;
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpDiscoverArgs {
     pub project_path: Option<String>,
+    #[serde(default)]
+    pub agent_type: Option<AgentType>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -18,6 +21,8 @@ pub struct McpSetEnabledArgs {
     pub name: String,
     pub enabled: bool,
     pub scope: Option<String>, // "global" | "project"
+    #[serde(default)]
+    pub agent_type: Option<AgentType>,
 }
 
 #[tauri::command]
@@ -30,8 +35,9 @@ pub fn mcp_discover(
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from);
+    let agent_type = args.agent_type.unwrap_or(AgentType::ClaudeCode);
     let mut out =
-        mcp_discovery::discover_mcp(project_path.as_deref()).map_err(|e| format!("{e:#}"))?;
+        mcp_discovery::discover_mcp_agent(agent_type, project_path.as_deref()).map_err(|e| format!("{e:#}"))?;
 
     // Best-effort "starting" status for servers we recently spawned.
     let guard = runtime.lock().expect("mcp runtime mutex poisoned");
@@ -50,6 +56,10 @@ pub fn mcp_set_enabled(
     runtime: State<'_, SharedMcpRuntime>,
     args: McpSetEnabledArgs,
 ) -> std::result::Result<(), String> {
+    let agent_type = args.agent_type.unwrap_or(AgentType::ClaudeCode);
+    if agent_type != AgentType::ClaudeCode {
+        return Err("mcp_set_enabled is only supported for Claude MCP config today".to_string());
+    }
     let project_path = args
         .project_path
         .as_deref()

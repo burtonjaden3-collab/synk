@@ -66,6 +66,15 @@ pub struct GitBranchesArgs {
     pub project_path: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitEnsureWorktreeArgs {
+    pub project_path: String,
+    pub branch: String,
+    #[serde(default)]
+    pub base_branch: Option<String>,
+}
+
 fn make_manager(
     app: &tauri::AppHandle,
     project_path: PathBuf,
@@ -120,18 +129,40 @@ pub fn git_create_worktree(
 
     let path_str = path.to_string_lossy().to_string();
 
-    // Move the live PTY into the worktree so the user can keep working without recreating the session.
-    // This keeps the backend state aligned with what's actually happening in the shell.
-    let cd_cmd = format!("cd '{}'\r\n", path_str.replace('\'', "'\\''"));
-    let _ = guard.write(args.session_id, &cd_cmd);
-    let _ = guard.set_session_git_context(
-        args.session_id,
-        Some(branch.clone()),
-        Some(path_str.clone()),
-    );
+    // Only auto-`cd` for plain terminal sessions. For agent CLIs (codex/claude/gemini),
+    // writing `cd ...` goes into the agent prompt (not the shell) and won't actually switch.
+    // The UI should restart the session in the desired dir instead.
+    if info.agent_type == crate::core::agent_detection::AgentType::Terminal {
+        let cd_cmd = format!("cd '{}'\r\n", path_str.replace('\'', "'\\''"));
+        let _ = guard.write(args.session_id, &cd_cmd);
+        let _ = guard.set_session_git_context(
+            args.session_id,
+            Some(branch.clone()),
+            Some(path_str.clone()),
+        );
+    }
 
     Ok(GitCreateWorktreeResponse {
         worktree_path: path_str,
+        branch,
+    })
+}
+
+#[tauri::command]
+pub fn git_ensure_worktree(
+    app: tauri::AppHandle,
+    args: GitEnsureWorktreeArgs,
+) -> std::result::Result<GitCreateWorktreeResponse, String> {
+    let gm = make_manager(&app, PathBuf::from(&args.project_path))?;
+    let base_branch = match args.base_branch.as_deref() {
+        Some(v) => v.to_string(),
+        None => gm.default_base_branch().map_err(|e| format!("{e:#}"))?,
+    };
+    let (path, branch) = gm
+        .create_worktree(&args.branch, &base_branch)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(GitCreateWorktreeResponse {
+        worktree_path: path.to_string_lossy().to_string(),
         branch,
     })
 }
@@ -147,18 +178,27 @@ pub fn git_remove_worktree(
         .get_session_info(args.session_id)
         .ok_or_else(|| format!("unknown session_id {}", args.session_id))?;
 
-    let branch = args
-        .branch
-        .or(info.branch)
+    let requested_branch = args.branch.clone();
+    let branch = requested_branch
+        .clone()
+        .or(info.branch.clone())
         .ok_or_else(|| "session has no branch".to_string())?;
     let project_path = PathBuf::from(&info.project_path);
     let gm = make_manager(&app, project_path.clone())?;
     gm.remove_worktree(&branch).map_err(|e| format!("{e:#}"))?;
 
-    // Best-effort: if the PTY is still alive, move it back to the project root.
-    let cd_cmd = format!("cd '{}'\r\n", info.project_path.replace('\'', "'\\''"));
-    let _ = guard.write(args.session_id, &cd_cmd);
-    let _ = guard.set_session_git_context(args.session_id, None, Some(info.project_path.clone()));
+    // Only auto-move the *current session* back to root when removing its *current branch*,
+    // and only for plain terminal sessions. Agent CLIs treat `cd` as input, not shell.
+    let removing_current_branch = match (&requested_branch, &info.branch) {
+        (None, _) => true,
+        (Some(req), Some(cur)) => req == cur,
+        (Some(_), None) => false,
+    };
+    if removing_current_branch && info.agent_type == crate::core::agent_detection::AgentType::Terminal {
+        let cd_cmd = format!("cd '{}'\r\n", info.project_path.replace('\'', "'\\''"));
+        let _ = guard.write(args.session_id, &cd_cmd);
+        let _ = guard.set_session_git_context(args.session_id, None, Some(info.project_path.clone()));
+    }
 
     Ok(GitRemoveWorktreeResponse { success: true })
 }
