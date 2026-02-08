@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { mcpDiscover, projectSessionConfigGet, projectSessionConfigSet, skillsDiscover } from "../../lib/tauri-api";
+import {
+  gitBranches,
+  gitCreateWorktree,
+  mcpDiscover,
+  projectSessionConfigGet,
+  projectSessionConfigSet,
+  skillsDiscover,
+} from "../../lib/tauri-api";
 import type { AgentType, McpServerInfo, SessionConfigDisk, SessionInfo, SkillInfo } from "../../lib/types";
 import { useAppStore } from "../../lib/store";
 
@@ -10,6 +17,7 @@ type SessionConfigProps = {
   session: SessionInfo | null;
   open: boolean;
   onClose: () => void;
+  onRefreshSessions: () => void;
 };
 
 const AGENTS: { id: AgentType; label: string }[] = [
@@ -29,7 +37,7 @@ function checkboxList(names: string[], selected: string[]): { name: string; chec
 }
 
 export function SessionConfig(props: SessionConfigProps) {
-  const { tauriAvailable, projectPath, session, open, onClose } = props;
+  const { tauriAvailable, projectPath, session, open, onClose, onRefreshSessions } = props;
 
   // Use paneIndex as the stable per-session key (sessionId is ephemeral across restarts).
   const sessionKey = session ? session.paneIndex : null;
@@ -39,6 +47,10 @@ export function SessionConfig(props: SessionConfigProps) {
   const [localCfg, setLocalCfg] = useState<SessionConfigDisk | null>(null);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [baseBranch, setBaseBranch] = useState<string>("");
+  const [worktreeBusy, setWorktreeBusy] = useState(false);
+  const [worktreeStatus, setWorktreeStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,11 +68,36 @@ export function SessionConfig(props: SessionConfigProps) {
     setMcpServers(m.servers);
   }, [tauriAvailable, projectPath]);
 
+  const refreshBranches = useCallback(async () => {
+    if (!tauriAvailable || !projectPath) return;
+    try {
+      const list = await gitBranches(projectPath);
+      setBranches(list);
+    } catch {
+      setBranches([]);
+    }
+  }, [tauriAvailable, projectPath]);
+
   // Load discovery lists when opening the panel.
   useEffect(() => {
     if (!open) return;
     refreshSources().catch(() => {});
-  }, [open, refreshSources]);
+    refreshBranches().catch(() => {});
+  }, [open, refreshSources, refreshBranches]);
+
+  // Pick a sensible default base branch once we have local branches.
+  useEffect(() => {
+    if (!open) return;
+    if (!branches.length) return;
+    if (baseBranch && branches.includes(baseBranch)) return;
+    if (branches.includes("main")) {
+      setBaseBranch("main");
+    } else if (branches.includes("master")) {
+      setBaseBranch("master");
+    } else {
+      setBaseBranch(branches[0] ?? "");
+    }
+  }, [open, branches.join("|")]);
 
   // Load saved session config (from store first, then from disk).
   useEffect(() => {
@@ -68,6 +105,7 @@ export function SessionConfig(props: SessionConfigProps) {
 
     setError(null);
     setStatus(null);
+    setWorktreeStatus(null);
 
     if (storedCfg) {
       setLocalCfg(storedCfg);
@@ -200,23 +238,107 @@ export function SessionConfig(props: SessionConfigProps) {
             <div className="flex items-center justify-between gap-2">
               <div>
                 <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">BRANCH</div>
-                <div className="mt-0.5 text-[11px] text-text-secondary">Name only (worktrees come later).</div>
+                <div className="mt-0.5 text-[11px] text-text-secondary">
+                  Create a worktree for this session and switch it to the new branch.
+                </div>
               </div>
             </div>
-            <input
-              className="mt-1 h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary disabled:opacity-60"
-              placeholder="main"
-              value={effectiveCfg?.branch ?? ""}
-              disabled={!tauriAvailable || saving}
-              onChange={(e) => {
-                const next = { ...(effectiveCfg as SessionConfigDisk), branch: e.target.value };
-                setLocalCfg(next);
-              }}
-              onBlur={() => {
-                if (!effectiveCfg) return;
-                persist(effectiveCfg).catch(() => {});
-              }}
-            />
+            <div className="mt-1 grid grid-cols-1 gap-2">
+              <input
+                className="h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary disabled:opacity-60"
+                placeholder="feat/phase-4-ui"
+                value={effectiveCfg?.branch ?? ""}
+                disabled={!tauriAvailable || saving || worktreeBusy}
+                onChange={(e) => {
+                  const next = { ...(effectiveCfg as SessionConfigDisk), branch: e.target.value };
+                  setLocalCfg(next);
+                }}
+                onBlur={() => {
+                  if (!effectiveCfg) return;
+                  persist(effectiveCfg).catch(() => {});
+                }}
+              />
+
+              <div className="flex items-center gap-2">
+                <label className="flex min-w-0 flex-1 items-center gap-2 text-[11px] font-semibold text-text-secondary">
+                  Base
+                  {branches.length ? (
+                    <select
+                      className="h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 font-mono text-[12px] text-text-primary disabled:opacity-60"
+                      value={baseBranch}
+                      disabled={!tauriAvailable || saving || worktreeBusy}
+                      onChange={(e) => setBaseBranch(e.target.value)}
+                    >
+                      {branches.map((b) => (
+                        <option key={b} value={b}>
+                          {b}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className="h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 font-mono text-[12px] text-text-primary disabled:opacity-60"
+                      value={baseBranch}
+                      disabled={!tauriAvailable || saving || worktreeBusy}
+                      placeholder="main"
+                      onChange={(e) => setBaseBranch(e.target.value)}
+                    />
+                  )}
+                </label>
+
+                <button
+                  type="button"
+                  className="h-9 shrink-0 rounded-lg border border-accent-blue/45 bg-accent-blue/10 px-3 text-[11px] font-semibold text-accent-blue hover:bg-accent-blue/15 disabled:opacity-60"
+                  disabled={
+                    !tauriAvailable ||
+                    saving ||
+                    worktreeBusy ||
+                    !session ||
+                    !(effectiveCfg?.branch && effectiveCfg.branch.trim()) ||
+                    !(baseBranch && baseBranch.trim())
+                  }
+                  title="Create branch (if needed), add a worktree, and switch this session into it"
+                  onClick={async () => {
+                    if (!tauriAvailable || !projectPath || !session) return;
+                    const branch = (effectiveCfg?.branch ?? "").trim();
+                    const base = (baseBranch ?? "").trim();
+                    if (!branch || !base) return;
+
+                    setError(null);
+                    setWorktreeStatus("Creating worktree…");
+                    setWorktreeBusy(true);
+                    try {
+                      await gitCreateWorktree(session.sessionId, branch, base);
+                      setWorktreeStatus("Switched session to worktree");
+
+                      // Refresh session list so the UI reflects the live branch/workingDir.
+                      onRefreshSessions();
+
+                      // Persist this as the session's preferred branch for restarts.
+                      const next = { ...(effectiveCfg as SessionConfigDisk), branch };
+                      setLocalCfg(next);
+                      persist(next).catch(() => {});
+                    } catch (e) {
+                      setError(String(e));
+                      setWorktreeStatus(null);
+                    } finally {
+                      setWorktreeBusy(false);
+                      window.setTimeout(() => setWorktreeStatus(null), 1600);
+                    }
+                  }}
+                >
+                  Create worktree
+                </button>
+              </div>
+
+              {worktreeStatus ? (
+                <div className="text-[11px] text-text-secondary/80">{worktreeStatus}</div>
+              ) : (
+                <div className="text-[11px] text-text-secondary/70">
+                  Tip: use <span className="font-mono">feat/phase-4</span> (or similar) while you implement Phase 4.
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="mt-2 rounded-xl border border-border bg-bg-secondary p-2">

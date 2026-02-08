@@ -65,8 +65,14 @@ impl AgentRegistry {
             },
         );
 
-        for agent_type in [AgentType::ClaudeCode, AgentType::GeminiCli, AgentType::Codex] {
-            let cmd = agent_type.cli_command().expect("non-terminal agent has command");
+        for agent_type in [
+            AgentType::ClaudeCode,
+            AgentType::GeminiCli,
+            AgentType::Codex,
+        ] {
+            let cmd = agent_type
+                .cli_command()
+                .expect("non-terminal agent has command");
             let path = which_like(cmd);
             detected.insert(
                 agent_type,
@@ -99,7 +105,10 @@ impl AgentRegistry {
     }
 
     pub fn is_installed(&self, agent_type: AgentType) -> bool {
-        self.detected.get(&agent_type).map(|a| a.found).unwrap_or(false)
+        self.detected
+            .get(&agent_type)
+            .map(|a| a.found)
+            .unwrap_or(false)
     }
 }
 

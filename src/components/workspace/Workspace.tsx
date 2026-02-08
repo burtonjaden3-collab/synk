@@ -42,6 +42,7 @@ import {
 } from "../../lib/keybindings";
 import { SessionGrid } from "./SessionGrid";
 import { Sidebar } from "../sidebar/Sidebar";
+import { BottomDrawer } from "../drawer/BottomDrawer";
 
 type OutputHandler = (dataB64: string) => void;
 
@@ -689,6 +690,9 @@ export function Workspace() {
               setActiveSessionId(sessionId);
             }
           }}
+          onRefreshSessions={() => {
+            refreshSessions().catch(() => {});
+          }}
         />
 
         {sidebarCollapsed ? (
@@ -703,48 +707,54 @@ export function Workspace() {
         ) : null}
 
         <div className="flex-1 overflow-hidden p-4">
-          <SessionGrid
-            sessions={orderedSessions}
-            mode={mode}
-            selectedSessionId={selectedSessionId}
-            activeSessionId={activeSessionId}
-            dimUnfocused={dimUnfocused}
-            dimOpacity={dimOpacity}
-            onSelectSession={(sessionId) => {
-              setSelectedSessionId(sessionId);
-              if (mode === "terminal") {
-                setActiveSessionId(sessionId);
-              }
-            }}
-            onActivateSession={(sessionId) => {
-              setSelectedSessionId(sessionId);
-              setActiveSessionId(sessionId);
-              setMode("terminal");
-            }}
-            onExitToNav={(sessionId) => {
-              setSelectedSessionId(sessionId);
-              setActiveSessionId(null);
-              setMode("navigation");
-            }}
-            registerOutputHandler={(sessionId, handler) => {
-              outputHandlersRef.current.set(sessionId, handler);
-            }}
-            unregisterOutputHandler={(sessionId) => {
-              outputHandlersRef.current.delete(sessionId);
-            }}
-            onDestroySession={async (sessionId) => {
-              setError(null);
-              setBusy(true);
-              try {
-                await sessionDestroy(sessionId);
-                await refreshSessions();
-              } catch (e) {
-                setError(String(e));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          />
+          <div className="flex h-full w-full flex-col gap-3 overflow-hidden">
+            <div className="flex-1 overflow-hidden">
+              <SessionGrid
+                sessions={orderedSessions}
+                mode={mode}
+                selectedSessionId={selectedSessionId}
+                activeSessionId={activeSessionId}
+                dimUnfocused={dimUnfocused}
+                dimOpacity={dimOpacity}
+                onSelectSession={(sessionId) => {
+                  setSelectedSessionId(sessionId);
+                  if (mode === "terminal") {
+                    setActiveSessionId(sessionId);
+                  }
+                }}
+                onActivateSession={(sessionId) => {
+                  setSelectedSessionId(sessionId);
+                  setActiveSessionId(sessionId);
+                  setMode("terminal");
+                }}
+                onExitToNav={(sessionId) => {
+                  setSelectedSessionId(sessionId);
+                  setActiveSessionId(null);
+                  setMode("navigation");
+                }}
+                registerOutputHandler={(sessionId, handler) => {
+                  outputHandlersRef.current.set(sessionId, handler);
+                }}
+                unregisterOutputHandler={(sessionId) => {
+                  outputHandlersRef.current.delete(sessionId);
+                }}
+                onDestroySession={async (sessionId) => {
+                  setError(null);
+                  setBusy(true);
+                  try {
+                    await sessionDestroy(sessionId);
+                    await refreshSessions();
+                  } catch (e) {
+                    setError(String(e));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              />
+            </div>
+
+            <BottomDrawer tauriAvailable={tauriAvailable} mode={mode} />
+          </div>
         </div>
       </div>
     </div>

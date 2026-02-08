@@ -180,7 +180,9 @@ pub fn onboarding_scan(app: tauri::AppHandle) -> std::result::Result<OnboardingS
     let settings = crate::core::settings::settings_get(&app).unwrap_or_default();
     let workspace_raw = settings.gastown.workspace_path.clone();
     let workspace_path = expand_home(&workspace_raw);
-    let workspace_found = fs::metadata(&workspace_path).map(|m| m.is_dir()).unwrap_or(false);
+    let workspace_found = fs::metadata(&workspace_path)
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
 
     Ok(OnboardingScanResult {
         agents,

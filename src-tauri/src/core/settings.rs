@@ -184,7 +184,12 @@ impl Default for UiDisk {
         Self {
             sidebar_width: 280,
             drawer_height: 250,
-            drawer_panel_order: vec!["cost".to_string(), "git".to_string(), "tasks".to_string(), "reviews".to_string()],
+            drawer_panel_order: vec![
+                "cost".to_string(),
+                "git".to_string(),
+                "tasks".to_string(),
+                "reviews".to_string(),
+            ],
             show_session_cost_in_header: true,
             dim_unfocused_panes: true,
             unfocused_opacity: 0.7,

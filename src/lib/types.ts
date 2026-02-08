@@ -118,6 +118,126 @@ export interface ProjectConfigView {
   sessions: Record<string, SessionConfigDisk>;
 }
 
+// -----------------------------------------------------------------------------
+// Git (Phase 3A)
+// -----------------------------------------------------------------------------
+
+export interface GitCreateWorktreeResponse {
+  worktreePath: string;
+  branch: string;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  head?: string | null;
+  branch?: string | null;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  isSynkManaged: boolean;
+}
+
+export interface OrphanWorktree {
+  info: WorktreeInfo;
+  ageSeconds: number;
+}
+
+export interface GitCleanupOrphansResponse {
+  removed: string[];
+  failed: string[];
+}
+
+export type GitEventType =
+  | "commit"
+  | "branch_created"
+  | "branch_deleted"
+  | "merge_completed"
+  | "conflict_detected";
+
+export interface GitEvent {
+  id: string;
+  eventType: GitEventType;
+  timestamp: string; // RFC3339
+  projectPath: string;
+  sessionId?: number | null;
+  branch?: string | null;
+  hash?: string | null;
+  message?: string | null;
+  author?: string | null;
+  baseBranch?: string | null;
+  strategy?: string | null;
+  conflictFiles?: string[] | null;
+}
+
+export type FileDiffStatus = "added" | "modified" | "deleted" | "renamed";
+export type DiffLineType = "context" | "addition" | "deletion";
+
+export interface DiffLine {
+  type: DiffLineType;
+  lineNumber: number; // line number in the new file
+  content: string;
+}
+
+export interface DiffHunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: DiffLine[];
+}
+
+export interface FileDiff {
+  path: string;
+  status: FileDiffStatus;
+  oldPath?: string | null;
+  hunks: DiffHunk[];
+}
+
+export interface GitMergeResult {
+  success: boolean;
+  conflictFiles?: string[] | null;
+}
+
+export type ReviewStatus =
+  | "pending"
+  | "in_review"
+  | "approved"
+  | "rejected"
+  | "changes_requested"
+  | "merging"
+  | "merged"
+  | "merge_conflict";
+
+export type ReviewDecision = "approved" | "rejected" | "changes_requested";
+
+export interface ReviewComment {
+  id: string;
+  filePath: string;
+  lineNumber: number;
+  body: string;
+  author: "user" | "agent" | string;
+  createdAt: string;
+  resolved: boolean;
+}
+
+export interface ReviewItem {
+  id: string;
+  taskId?: string | null;
+  sessionId: number;
+  branch: string;
+  baseBranch: string;
+  status: ReviewStatus;
+  createdAt: string;
+  updatedAt: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  files: FileDiff[];
+  comments: ReviewComment[];
+  reviewDecision?: ReviewDecision | null;
+  mergeStrategy?: MergeStrategy | null;
+}
+
 export type SessionSnapshotKind = "named" | "autosave";
 
 export interface GridLayoutSnapshot {

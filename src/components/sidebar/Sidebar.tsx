@@ -26,6 +26,7 @@ type SidebarProps = {
   sessions: SessionInfo[];
   selectedSessionId: SessionId | null;
   onSelectSession: (sessionId: SessionId) => void;
+  onRefreshSessions: () => void;
 };
 
 export function Sidebar(props: SidebarProps) {
@@ -44,6 +45,7 @@ export function Sidebar(props: SidebarProps) {
     sessions,
     selectedSessionId,
     onSelectSession,
+    onRefreshSessions,
   } = props;
 
   const [configOpen, setConfigOpen] = useState(false);
@@ -157,6 +159,7 @@ export function Sidebar(props: SidebarProps) {
                 session={selectedSession}
                 open={configOpen}
                 onClose={() => setConfigOpen(false)}
+                onRefreshSessions={onRefreshSessions}
               />
             </div>
           </div>

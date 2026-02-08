@@ -90,8 +90,12 @@ fn parse_settings_installed_skills(settings_json: &Value) -> Vec<SkillInfo> {
     };
 
     for item in installed {
-        let Some(obj) = item.as_object() else { continue };
-        let Some(name) = obj.get("name").and_then(|v| v.as_str()) else { continue };
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let Some(name) = obj.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let path = obj
             .get("path")
             .and_then(|v| v.as_str())
@@ -189,7 +193,8 @@ fn scan_project_recommended(project_path: &Path) -> Result<Vec<String>> {
                 .filter(|s| !s.is_empty())
                 .last()
                 .unwrap_or("");
-            let candidate = candidate.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+            let candidate = candidate
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
             if !candidate.is_empty() {
                 out.insert(candidate.to_string());
             }
@@ -244,12 +249,13 @@ pub fn set_skill_enabled(
 ) -> Result<()> {
     let settings_path = settings_path()?;
     if let Some(parent) = settings_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create dir {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("create dir {}", parent.display()))?;
     }
 
     let mut root: Value = match read_text_if_exists(&settings_path)? {
-        Some(text) => serde_json::from_str(&text).unwrap_or_else(|_| Value::Object(Default::default())),
+        Some(text) => {
+            serde_json::from_str(&text).unwrap_or_else(|_| Value::Object(Default::default()))
+        }
         None => Value::Object(Default::default()),
     };
     if !root.is_object() {
@@ -273,8 +279,12 @@ pub fn set_skill_enabled(
 
     let mut found = false;
     for item in installed.iter_mut() {
-        let Some(obj) = item.as_object_mut() else { continue };
-        let Some(n) = obj.get("name").and_then(|v| v.as_str()) else { continue };
+        let Some(obj) = item.as_object_mut() else {
+            continue;
+        };
+        let Some(n) = obj.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
         if n != name {
             continue;
         }
@@ -290,9 +300,13 @@ pub fn set_skill_enabled(
     }
 
     if !found {
-        let default_path = path
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| skills_dir().map(|d| d.join(name)).unwrap_or_default().to_string_lossy().to_string());
+        let default_path = path.map(|s| s.to_string()).unwrap_or_else(|| {
+            skills_dir()
+                .map(|d| d.join(name))
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
         let mut obj = serde_json::Map::new();
         obj.insert("name".to_string(), Value::String(name.to_string()));
         obj.insert("path".to_string(), Value::String(default_path));

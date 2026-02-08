@@ -85,7 +85,10 @@ fn parse_mcp_config(text: &str) -> BTreeMap<String, Value> {
 }
 
 fn parse_server_fields(v: &Value) -> (Option<String>, Vec<String>, HashMap<String, String>, bool) {
-    let command = v.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let command = v
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let args = v
         .get("args")
         .and_then(|v| v.as_array())
@@ -112,10 +115,7 @@ fn pgrep_running() -> Vec<McpRunningProcess> {
     if cfg!(windows) {
         return Vec::new();
     }
-    let output = Command::new("pgrep")
-        .arg("-a")
-        .arg("mcp-server")
-        .output();
+    let output = Command::new("pgrep").arg("-a").arg("mcp-server").output();
     let Ok(out) = output else {
         return Vec::new();
     };
@@ -254,13 +254,11 @@ pub fn discover_mcp(project_path: Option<&Path>) -> Result<McpDiscoveryResult> {
     }
 
     // Stable ordering: configured by name, then process-only by pid.
-    servers.sort_by(|a, b| {
-        match (a.configured, b.configured) {
-            (true, true) => a.name.cmp(&b.name),
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            (false, false) => a.pid.cmp(&b.pid),
-        }
+    servers.sort_by(|a, b| match (a.configured, b.configured) {
+        (true, true) => a.name.cmp(&b.name),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => a.pid.cmp(&b.pid),
     });
 
     Ok(McpDiscoveryResult {
@@ -305,12 +303,13 @@ pub fn set_server_enabled(
     };
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create dir {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("create dir {}", parent.display()))?;
     }
 
     let mut root: Value = match read_text_if_exists(&path)? {
-        Some(text) => serde_json::from_str(&text).unwrap_or_else(|_| Value::Object(Default::default())),
+        Some(text) => {
+            serde_json::from_str(&text).unwrap_or_else(|_| Value::Object(Default::default()))
+        }
         None => Value::Object(Default::default()),
     };
     if !root.is_object() {

@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use tauri::State;
 
+use crate::core::agent_detection::AgentType;
 use crate::core::persistence::{
     ProjectConfigView, RecentProject, SessionConfigDisk, SessionConfigView, SessionSnapshot,
     SessionSnapshotMeta,
 };
-use crate::core::agent_detection::AgentType;
 use crate::core::session_manager::SharedSessionManager;
 
 #[derive(Debug, serde::Deserialize)]
@@ -75,7 +75,9 @@ pub struct SessionSnapshotAutosaveMetaArgs {
 }
 
 #[tauri::command]
-pub fn list_recent_projects(app: tauri::AppHandle) -> std::result::Result<Vec<RecentProject>, String> {
+pub fn list_recent_projects(
+    app: tauri::AppHandle,
+) -> std::result::Result<Vec<RecentProject>, String> {
     crate::core::persistence::list_recent_projects(&app).map_err(|e| format!("{e:#}"))
 }
 
@@ -89,7 +91,9 @@ pub fn open_project(
 }
 
 #[tauri::command]
-pub fn project_config_get(args: ProjectConfigGetArgs) -> std::result::Result<ProjectConfigView, String> {
+pub fn project_config_get(
+    args: ProjectConfigGetArgs,
+) -> std::result::Result<ProjectConfigView, String> {
     let path = PathBuf::from(args.project_path);
     crate::core::persistence::project_config_get(&path).map_err(|e| format!("{e:#}"))
 }
@@ -104,7 +108,9 @@ pub fn project_session_config_get(
 }
 
 #[tauri::command]
-pub fn project_session_config_set(args: ProjectSessionConfigSetArgs) -> std::result::Result<(), String> {
+pub fn project_session_config_set(
+    args: ProjectSessionConfigSetArgs,
+) -> std::result::Result<(), String> {
     let path = PathBuf::from(args.project_path);
     let cfg = SessionConfigDisk {
         agent_type: args.agent_type,

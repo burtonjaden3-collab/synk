@@ -21,10 +21,7 @@ pub type SharedMcpRuntime = Arc<Mutex<McpRuntime>>;
 
 fn is_pid_running_unix(pid: u32) -> bool {
     // `kill -0` checks existence without sending a signal.
-    let status = Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .status();
+    let status = Command::new("kill").arg("-0").arg(pid.to_string()).status();
     status.map(|s| s.success()).unwrap_or(false)
 }
 
@@ -38,10 +35,16 @@ fn terminate_pid(pid: u32) -> Result<()> {
     }
 
     // SIGTERM, then SIGKILL if still alive.
-    let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+    let _ = Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
     std::thread::sleep(Duration::from_millis(300));
     if is_pid_running_unix(pid) {
-        let _ = Command::new("kill").arg("-KILL").arg(pid.to_string()).status();
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .status();
     }
     Ok(())
 }
@@ -75,7 +78,9 @@ impl McpRuntime {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        let child = cmd.spawn().with_context(|| format!("spawn MCP server {name} ({command})"))?;
+        let child = cmd
+            .spawn()
+            .with_context(|| format!("spawn MCP server {name} ({command})"))?;
         let pid = child.id();
         self.children.insert(
             name.to_string(),

@@ -10,8 +10,8 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
-use crate::core::process_pool::{ProcessPool, PtyHandle, SharedProcessPool};
 use crate::core::agent_detection::{AgentType, SharedAgentRegistry};
+use crate::core::process_pool::{ProcessPool, PtyHandle, SharedProcessPool};
 use crate::events::{SessionExitEvent, SessionOutputEvent};
 
 pub type SharedSessionManager = Arc<std::sync::Mutex<SessionManager>>;
@@ -266,6 +266,25 @@ impl SessionManager {
         let mut out: Vec<_> = self.sessions.values().map(|r| r.info.clone()).collect();
         out.sort_by_key(|s| s.pane_index);
         out
+    }
+
+    pub fn get_session_info(&self, session_id: usize) -> Option<SessionInfo> {
+        self.sessions.get(&session_id).map(|r| r.info.clone())
+    }
+
+    pub fn set_session_git_context(
+        &mut self,
+        session_id: usize,
+        branch: Option<String>,
+        working_dir: Option<String>,
+    ) -> Result<()> {
+        let rec = self
+            .sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| anyhow!("unknown session_id {session_id}"))?;
+        rec.info.branch = branch;
+        rec.info.working_dir = working_dir;
+        Ok(())
     }
 
     pub fn scrollback_b64(&self, session_id: usize) -> Result<String> {

@@ -18,14 +18,15 @@ pub struct SkillsSetEnabledArgs {
 }
 
 #[tauri::command]
-pub fn skills_discover(args: SkillsDiscoverArgs) -> std::result::Result<SkillsDiscoveryResult, String> {
+pub fn skills_discover(
+    args: SkillsDiscoverArgs,
+) -> std::result::Result<SkillsDiscoveryResult, String> {
     let project_path = args
         .project_path
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from);
-    skills_discovery::discover_skills(project_path.as_deref())
-        .map_err(|e| format!("{e:#}"))
+    skills_discovery::discover_skills(project_path.as_deref()).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]

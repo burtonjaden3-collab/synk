@@ -21,6 +21,17 @@ import type {
   ProviderModelsResult,
   SkillsDiscoveryResult,
   OnboardingScanResult,
+  GitCreateWorktreeResponse,
+  WorktreeInfo,
+  OrphanWorktree,
+  GitCleanupOrphansResponse,
+  FileDiff,
+  GitMergeResult,
+  MergeStrategy,
+  GitEvent,
+  ReviewItem,
+  ReviewStatus,
+  ReviewDecision,
 } from "./types";
 
 export function agentsList() {
@@ -111,6 +122,98 @@ export function sessionList() {
   return invoke<SessionInfo[]>("session_list");
 }
 
+// -----------------------------------------------------------------------------
+// Git (Phase 3A)
+// -----------------------------------------------------------------------------
+
+export function gitCreateWorktree(sessionId: SessionId, branch: string, baseBranch?: string | null) {
+  return invoke<GitCreateWorktreeResponse>("git_create_worktree", {
+    args: { sessionId, branch, baseBranch: baseBranch ?? null },
+  });
+}
+
+export function gitRemoveWorktree(sessionId: SessionId, branch?: string | null) {
+  return invoke<{ success: boolean }>("git_remove_worktree", {
+    args: { sessionId, branch: branch ?? null },
+  });
+}
+
+// Alias to match the spec reference.
+export function gitDeleteWorktree(sessionId: SessionId, branch?: string | null) {
+  return invoke<{ success: boolean }>("git_delete_worktree", {
+    args: { sessionId, branch: branch ?? null },
+  });
+}
+
+export function gitListWorktrees(projectPath: string) {
+  return invoke<WorktreeInfo[]>("git_list_worktrees", { args: { projectPath } });
+}
+
+export function gitDetectOrphans(projectPath: string, minAgeSeconds?: number | null) {
+  return invoke<OrphanWorktree[]>("git_detect_orphans", {
+    args: { projectPath, minAgeSeconds: minAgeSeconds ?? null },
+  });
+}
+
+export function gitCleanupOrphans(projectPath: string, minAgeSeconds?: number | null) {
+  return invoke<GitCleanupOrphansResponse>("git_cleanup_orphans", {
+    args: { projectPath, minAgeSeconds: minAgeSeconds ?? null },
+  });
+}
+
+export function gitBranches(projectPath: string) {
+  return invoke<string[]>("git_branches", { args: { projectPath } });
+}
+
+export function gitDiff(projectPath: string, branch: string, baseBranch: string) {
+  return invoke<FileDiff[]>("git_diff", { args: { projectPath, branch, baseBranch } });
+}
+
+export function gitMerge(projectPath: string, branch: string, baseBranch: string, strategy: MergeStrategy) {
+  return invoke<GitMergeResult>("git_merge", {
+    args: { projectPath, branch, baseBranch, strategy },
+  });
+}
+
+export function reviewCreate(projectPath: string, sessionId: number, branch: string, baseBranch: string) {
+  return invoke<ReviewItem>("review_create", { args: { projectPath, sessionId, branch, baseBranch } });
+}
+
+export function reviewList(projectPath: string) {
+  return invoke<ReviewItem[]>("review_list", { args: { projectPath } });
+}
+
+export function reviewGet(projectPath: string, id: string) {
+  return invoke<ReviewItem>("review_get", { args: { projectPath, id } });
+}
+
+export function reviewSetStatus(projectPath: string, id: string, status: ReviewStatus) {
+  return invoke<ReviewItem>("review_set_status", { args: { projectPath, id, status } });
+}
+
+export function reviewSetDecision(projectPath: string, id: string, decision: ReviewDecision) {
+  return invoke<ReviewItem>("review_set_decision", { args: { projectPath, id, decision } });
+}
+
+export function reviewSetMergeStrategy(projectPath: string, id: string, strategy: MergeStrategy) {
+  return invoke<ReviewItem>("review_set_merge_strategy", { args: { projectPath, id, strategy } });
+}
+
+export function reviewAddComment(
+  projectPath: string,
+  id: string,
+  filePath: string,
+  lineNumber: number,
+  body: string,
+  author: string = "user",
+) {
+  return invoke<ReviewItem>("review_add_comment", { args: { projectPath, id, filePath, lineNumber, body, author } });
+}
+
+export function reviewResolveComment(projectPath: string, id: string, commentId: string, resolved: boolean) {
+  return invoke<ReviewItem>("review_resolve_comment", { args: { projectPath, id, commentId, resolved } });
+}
+
 export async function onSessionOutput(
   handler: (payload: SessionOutputEvent) => void,
 ) {
@@ -119,6 +222,10 @@ export async function onSessionOutput(
 
 export async function onSessionExit(handler: (payload: SessionExitEvent) => void) {
   return listen<SessionExitEvent>("session:exit", (event) => handler(event.payload));
+}
+
+export async function onGitEvent(handler: (payload: GitEvent) => void) {
+  return listen<GitEvent>("git:event", (event) => handler(event.payload));
 }
 
 export function skillsDiscover(projectPath?: string | null) {

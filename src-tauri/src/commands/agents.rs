@@ -9,4 +9,3 @@ pub fn agents_list(
     let guard = registry.lock().expect("agent registry mutex poisoned");
     Ok(guard.list())
 }
-

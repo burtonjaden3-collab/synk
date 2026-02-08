@@ -34,7 +34,8 @@ pub fn settings_set(
     pool: State<'_, SharedProcessPool>,
     args: SettingsSetArgs,
 ) -> std::result::Result<SettingsView, String> {
-    let view = crate::core::settings::settings_set(&app, args.settings).map_err(|e| format!("{e:#}"))?;
+    let view =
+        crate::core::settings::settings_set(&app, args.settings).map_err(|e| format!("{e:#}"))?;
 
     // Apply performance settings immediately (best-effort). This updates limits for new sessions
     // and changes how the pool refills. Existing sessions are not affected.

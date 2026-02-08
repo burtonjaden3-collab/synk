@@ -1,5 +1,5 @@
-use std::fs;
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -49,7 +49,9 @@ fn read_projects_file(app: &tauri::AppHandle) -> Result<ProjectsFileDisk> {
     let path = projects_file_path(app)?;
     let text = match fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ProjectsFileDisk::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ProjectsFileDisk::default())
+        }
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
     let parsed: ProjectsFileDisk =
@@ -237,7 +239,8 @@ fn read_project_config_value(project_path: &Path) -> Result<Value> {
     let Some(text) = read_text_if_exists(&path)? else {
         return Ok(Value::Object(Default::default()));
     };
-    let mut root: Value = serde_json::from_str(&text).unwrap_or_else(|_| Value::Object(Default::default()));
+    let mut root: Value =
+        serde_json::from_str(&text).unwrap_or_else(|_| Value::Object(Default::default()));
     if !root.is_object() {
         root = Value::Object(Default::default());
     }
@@ -278,13 +281,13 @@ pub fn project_config_get(project_path: &Path) -> Result<ProjectConfigView> {
     })
 }
 
-pub fn project_session_config_get(project_path: &Path, session_id: usize) -> Result<Option<SessionConfigView>> {
+pub fn project_session_config_get(
+    project_path: &Path,
+    session_id: usize,
+) -> Result<Option<SessionConfigView>> {
     let root = read_project_config_value(project_path)?;
     let key = session_id.to_string();
-    let Some(v) = root
-        .get("sessions")
-        .and_then(|s| s.get(&key))
-    else {
+    let Some(v) = root.get("sessions").and_then(|s| s.get(&key)) else {
         return Ok(None);
     };
     let parsed: SessionConfigDisk =
@@ -315,7 +318,9 @@ pub fn project_session_config_set(
     }
 
     let key = session_id.to_string();
-    let obj = root["sessions"].as_object_mut().expect("sessions is object");
+    let obj = root["sessions"]
+        .as_object_mut()
+        .expect("sessions is object");
     obj.insert(
         key,
         serde_json::to_value(config).context("serialize SessionConfigDisk")?,
@@ -455,13 +460,21 @@ fn snapshot_id_autosave(project_path: &Path) -> String {
     format!("{project}-autosave")
 }
 
-fn snapshot_path_autosave(app: &tauri::AppHandle, project_path: &Path) -> Result<(String, PathBuf)> {
+fn snapshot_path_autosave(
+    app: &tauri::AppHandle,
+    project_path: &Path,
+) -> Result<(String, PathBuf)> {
     let id = snapshot_id_autosave(project_path);
     let dir = sessions_dir(app)?;
     Ok((id.clone(), dir.join(format!("{id}.json"))))
 }
 
-fn snapshot_meta(id: String, kind: &str, snapshot: &SessionSnapshot, path: &Path) -> SessionSnapshotMeta {
+fn snapshot_meta(
+    id: String,
+    kind: &str,
+    snapshot: &SessionSnapshot,
+    path: &Path,
+) -> SessionSnapshotMeta {
     SessionSnapshotMeta {
         id,
         name: snapshot.name.clone(),
@@ -485,7 +498,8 @@ fn write_snapshot(path: &Path, snapshot: &SessionSnapshot) -> Result<()> {
 
 fn read_snapshot(path: &Path) -> Result<SessionSnapshot> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let snap: SessionSnapshot = serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    let snap: SessionSnapshot =
+        serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
     Ok(snap)
 }
 
@@ -508,7 +522,10 @@ fn build_snapshot(
         let skills = cfg.map(|c| c.skills.clone()).unwrap_or_default();
         let mcp_servers = cfg.map(|c| c.mcp_servers.clone()).unwrap_or_default();
         let worktree_enabled = cfg.and_then(|c| c.worktree_isolation).unwrap_or(false);
-        let branch = s.branch.clone().or_else(|| cfg.and_then(|c| c.branch.clone()));
+        let branch = s
+            .branch
+            .clone()
+            .or_else(|| cfg.and_then(|c| c.branch.clone()));
 
         let wd = s
             .working_dir
@@ -556,7 +573,13 @@ pub fn session_snapshot_save_named(
         }
     }
 
-    let snapshot = build_snapshot(project_path, orchestration_mode, name, sessions, session_configs)?;
+    let snapshot = build_snapshot(
+        project_path,
+        orchestration_mode,
+        name,
+        sessions,
+        session_configs,
+    )?;
     let (id, path) = snapshot_path_named(app, name)?;
     write_snapshot(&path, &snapshot)?;
     Ok(snapshot_meta(id, "named", &snapshot, &path))
@@ -576,7 +599,13 @@ pub fn session_snapshot_save_autosave(
     }
 
     let name = "autosave";
-    let snapshot = build_snapshot(project_path, orchestration_mode, name, sessions, session_configs)?;
+    let snapshot = build_snapshot(
+        project_path,
+        orchestration_mode,
+        name,
+        sessions,
+        session_configs,
+    )?;
     let (id, path) = snapshot_path_autosave(app, project_path)?;
     write_snapshot(&path, &snapshot)?;
     Ok(snapshot_meta(id, "autosave", &snapshot, &path))
@@ -631,7 +660,11 @@ pub fn session_snapshot_list(
             }
         }
 
-        let kind = if id.ends_with("-autosave") { "autosave" } else { "named" };
+        let kind = if id.ends_with("-autosave") {
+            "autosave"
+        } else {
+            "named"
+        };
         out.push(snapshot_meta(id, kind, &snap, &path));
     }
 
@@ -649,6 +682,7 @@ pub fn session_snapshot_autosave_meta(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
-    let snap: SessionSnapshot = serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+    let snap: SessionSnapshot =
+        serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
     Ok(Some(snapshot_meta(id, "autosave", &snap, &path)))
 }
