@@ -9,3 +9,4 @@ pub mod mcp_discovery;
 pub mod mcp_server;
 pub mod persistence;
 pub mod skills_discovery;
+pub mod settings;

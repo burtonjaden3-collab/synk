@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "xterm";
 
-import { sessionResize, sessionWrite } from "../../lib/tauri-api";
+import { sessionResize, sessionScrollback, sessionWrite } from "../../lib/tauri-api";
 import type { SessionInfo } from "../../lib/types";
 import type { InputMode } from "../../lib/keybindings";
 
@@ -33,6 +33,7 @@ export function SessionPane(props: {
   selected: boolean;
   active: boolean;
   dimmed: boolean;
+  dimOpacity?: number;
   onSelect: () => void;
   onActivate: () => void;
   onExitToNav: () => void;
@@ -91,15 +92,40 @@ export function SessionPane(props: {
     termRef.current = term;
     fitRef.current = fit;
 
-    // Register per-session output handler (Workspace keeps a single Tauri listener).
-    props.registerOutputHandler(session.sessionId, (dataB64) => {
-      const t = termRef.current;
-      const dec = decoderRef.current;
-      if (!t || !dec) return;
-      const bytes = decodeB64ToBytes(dataB64);
-      const text = dec.decode(bytes, { stream: true });
-      t.write(text);
-    });
+    let didRegister = false;
+    let disposed = false;
+
+    // Best-effort: restore scrollback so leaving Workspace (Home) doesn't blank the pane.
+    // We do this before registering the live output handler to avoid duplicated output.
+    (async () => {
+      try {
+        const t = termRef.current;
+        const dec = decoderRef.current;
+        if (!t || !dec) return;
+
+        const sb = await sessionScrollback(session.sessionId);
+        if (disposed) return;
+        if (sb.dataB64) {
+          const bytes = decodeB64ToBytes(sb.dataB64);
+          const text = dec.decode(bytes, { stream: false });
+          if (text) t.write(text);
+        }
+      } catch {
+        // Ignore: scrollback is an enhancement, not required.
+      } finally {
+        if (disposed) return;
+        // Register per-session output handler (Workspace keeps a single Tauri listener).
+        props.registerOutputHandler(session.sessionId, (dataB64) => {
+          const t = termRef.current;
+          const dec = decoderRef.current;
+          if (!t || !dec) return;
+          const bytes = decodeB64ToBytes(dataB64);
+          const text = dec.decode(bytes, { stream: true });
+          t.write(text);
+        });
+        didRegister = true;
+      }
+    })();
 
     const ro = new ResizeObserver(() => {
       if (resizeTimerRef.current !== null) {
@@ -119,7 +145,8 @@ export function SessionPane(props: {
     ro.observe(host);
 
     return () => {
-      props.unregisterOutputHandler(session.sessionId);
+      disposed = true;
+      if (didRegister) props.unregisterOutputHandler(session.sessionId);
       ro.disconnect();
 
       if (resizeTimerRef.current !== null) {
@@ -146,8 +173,8 @@ export function SessionPane(props: {
         props.mode === "navigation" && props.selected ? "border-accent-blue/70" : "",
         props.mode === "navigation" && !props.selected ? "border-border" : "",
         props.mode === "terminal" && !props.active ? "border-border" : "",
-        props.dimmed ? "opacity-70" : "",
       ].join(" ")}
+      style={props.dimmed ? { opacity: props.dimOpacity ?? 0.7 } : undefined}
       onMouseDown={(e) => {
         // Only consider clicks inside the pane body as "activate terminal".
         // The header has its own behavior (select / exit terminal mode).

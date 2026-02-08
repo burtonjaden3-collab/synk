@@ -66,3 +66,18 @@ export function stopEvent(e: KeyboardEvent) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e as any).stopImmediatePropagation?.();
 }
+
+export function isSidebarToggle(e: KeyboardEvent): boolean {
+  // Reserved global app chrome hotkey (sidebar is app-level, not per-pane).
+  return e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "e";
+}
+
+export function isSettingsToggle(e: KeyboardEvent): boolean {
+  // Global app chrome hotkey.
+  const ctrlOrMeta = (e.ctrlKey && !e.metaKey) || (!e.ctrlKey && e.metaKey);
+  if (!ctrlOrMeta || e.altKey) return false;
+
+  // Prefer code for layout-independence; fallback to key.
+  if (e.code === "Comma") return true;
+  return e.key === "," || e.key === "<";
+}

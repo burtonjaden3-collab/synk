@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -24,6 +24,8 @@ pub struct CreateSessionArgs {
     pub project_path: String,
     pub branch: Option<String>,
     pub working_dir: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
     pub env: Option<HashMap<String, String>>,
 }
 
@@ -53,6 +55,7 @@ struct SessionRecord {
     handle: PtyHandle,
     stop: Arc<AtomicBool>,
     output_thread: JoinHandle<()>,
+    scrollback: Arc<std::sync::Mutex<VecDeque<u8>>>,
 }
 
 pub struct SessionManager {
@@ -60,6 +63,17 @@ pub struct SessionManager {
     agents: SharedAgentRegistry,
     next_session_id: usize,
     sessions: HashMap<usize, SessionRecord>,
+}
+
+fn is_valid_env_var_name(name: &str) -> bool {
+    let mut it = name.chars();
+    let Some(first) = it.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    it.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 impl SessionManager {
@@ -77,22 +91,23 @@ impl SessionManager {
         app: tauri::AppHandle,
         args: CreateSessionArgs,
     ) -> Result<CreateSessionResponse> {
-        // Enforce the spec max (12). The pool also enforces this, but doing it here
-        // gives a stable error message for the frontend.
-        const MAX_SESSIONS: usize = 12;
-        if self.sessions.len() >= MAX_SESSIONS {
-            return Err(anyhow!("max sessions reached ({MAX_SESSIONS})"));
+        // Enforce the pool-configured max. The pool also enforces this, but doing it here
+        // gives a stable error message for the frontend and keeps pane indexing bounded.
+        let max_sessions: usize = ProcessPool::max_active(self.pool.clone());
+        if self.sessions.len() >= max_sessions {
+            return Err(anyhow!("max sessions reached ({max_sessions})"));
         }
 
         let session_id = self.alloc_session_id();
-        let pane_index = self.alloc_pane_index(MAX_SESSIONS)?;
+        let pane_index = self.alloc_pane_index(max_sessions)?;
 
         let mut handle = ProcessPool::claim(self.pool.clone(), session_id)?;
 
         let (effective_agent_type, warning) = self.resolve_agent(&args.agent_type);
 
         // If anything fails after we claim the PTY, return it to the pool so we don't leak.
-        let built = (|| -> Result<(SessionInfo, Arc<AtomicBool>, JoinHandle<()>)> {
+        let built =
+            (|| -> Result<(SessionInfo, Arc<AtomicBool>, JoinHandle<()>, Arc<std::sync::Mutex<VecDeque<u8>>>)> {
             // Session bootstrap: cd + env exports.
             let wd = args
                 .working_dir
@@ -101,6 +116,9 @@ impl SessionManager {
 
             if let Some(env) = &args.env {
                 for (k, v) in env {
+                    if !is_valid_env_var_name(k) {
+                        return Err(anyhow!("invalid env var name: {k}"));
+                    }
                     handle.write_str(&format!(
                         "export {}='{}'\r\n",
                         k,
@@ -132,17 +150,21 @@ impl SessionManager {
             // Launch the agent CLI inside the claimed shell.
             if effective_agent_type != AgentType::Terminal {
                 if let Some(cmd) = effective_agent_type.cli_command() {
-                    handle.write_str(&format!("{cmd}\r\n"))?;
+                    let full = agent_command_with_model(effective_agent_type, cmd, args.model.as_deref());
+                    handle.write_str(&format!("{full}\r\n"))?;
                 }
             }
 
             // Start output pump before we insert the session record, so we can return
             // a fully-active session.
             let stop = Arc::new(AtomicBool::new(false));
+            let scrollback: Arc<std::sync::Mutex<VecDeque<u8>>> =
+                Arc::new(std::sync::Mutex::new(VecDeque::new()));
             let output_thread = spawn_output_pump(
                 app,
                 session_id,
                 stop.clone(),
+                scrollback.clone(),
                 &mut handle, // used only to clone fd/reader
             )?;
 
@@ -155,10 +177,10 @@ impl SessionManager {
                 working_dir: Some(wd),
             };
 
-            Ok((info, stop, output_thread))
+            Ok((info, stop, output_thread, scrollback))
         })();
 
-        let (info, stop, output_thread) = match built {
+        let (info, stop, output_thread, scrollback) = match built {
             Ok(v) => v,
             Err(err) => {
                 let _ = ProcessPool::release(self.pool.clone(), session_id, handle);
@@ -173,6 +195,7 @@ impl SessionManager {
                 handle,
                 stop,
                 output_thread,
+                scrollback,
             },
         );
 
@@ -245,6 +268,19 @@ impl SessionManager {
         out
     }
 
+    pub fn scrollback_b64(&self, session_id: usize) -> Result<String> {
+        let rec = self
+            .sessions
+            .get(&session_id)
+            .ok_or_else(|| anyhow!("unknown session_id {session_id}"))?;
+        let guard = rec.scrollback.lock().expect("scrollback mutex poisoned");
+        let (a, b) = guard.as_slices();
+        let mut bytes = Vec::with_capacity(guard.len());
+        bytes.extend_from_slice(a);
+        bytes.extend_from_slice(b);
+        Ok(STANDARD.encode(bytes))
+    }
+
     pub fn shutdown(&mut self) {
         // Best-effort: stop all output pumps and kill session PTYs without attempting
         // to recycle/refill the pool.
@@ -308,6 +344,7 @@ fn spawn_output_pump(
     app: tauri::AppHandle,
     session_id: usize,
     stop: Arc<AtomicBool>,
+    scrollback: Arc<std::sync::Mutex<VecDeque<u8>>>,
     handle: &mut PtyHandle,
 ) -> Result<JoinHandle<()>> {
     #[cfg(not(unix))]
@@ -327,6 +364,7 @@ fn spawn_output_pump(
         let mut reader = handle.clone_reader()?;
 
         let t = thread::spawn(move || {
+            const SCROLLBACK_CAP_BYTES: usize = 512 * 1024;
             let mut buf = [0u8; 16 * 1024];
 
             while !stop.load(Ordering::Relaxed) {
@@ -350,6 +388,17 @@ fn spawn_output_pump(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // Keep a bounded in-memory scrollback so the UI can restore content
+                        // after React unmounts/remounts (e.g. Home -> Workspace navigation).
+                        if let Ok(mut sb) = scrollback.lock() {
+                            for &b in &buf[..n] {
+                                sb.push_back(b);
+                            }
+                            while sb.len() > SCROLLBACK_CAP_BYTES {
+                                sb.pop_front();
+                            }
+                        }
+
                         let data_b64 = STANDARD.encode(&buf[..n]);
                         let _ = app.emit(
                             "session:output",
@@ -383,11 +432,41 @@ fn shell_single_quote_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::is_valid_env_var_name;
+
+    #[test]
+    fn env_var_name_validation() {
+        assert!(is_valid_env_var_name("A"));
+        assert!(is_valid_env_var_name("_A"));
+        assert!(is_valid_env_var_name("A1_B2"));
+        assert!(!is_valid_env_var_name(""));
+        assert!(!is_valid_env_var_name("1ABC"));
+        assert!(!is_valid_env_var_name("A-B"));
+        assert!(!is_valid_env_var_name("A B"));
+        assert!(!is_valid_env_var_name("A;rm -rf /"));
+    }
+}
+
 fn agent_type_to_env_value(t: AgentType) -> &'static str {
     match t {
         AgentType::ClaudeCode => "claude_code",
         AgentType::GeminiCli => "gemini_cli",
         AgentType::Codex => "codex",
         AgentType::Terminal => "terminal",
+    }
+}
+
+fn agent_command_with_model(agent: AgentType, base_cmd: &str, model: Option<&str>) -> String {
+    let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) else {
+        return base_cmd.to_string();
+    };
+    let m = shell_single_quote_escape(model);
+    match agent {
+        AgentType::ClaudeCode => format!("{base_cmd} --model '{m}'"),
+        AgentType::GeminiCli => format!("{base_cmd} --model '{m}'"),
+        AgentType::Codex => format!("{base_cmd} --model '{m}'"),
+        AgentType::Terminal => base_cmd.to_string(),
     }
 }

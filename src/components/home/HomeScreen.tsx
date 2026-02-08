@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { isTauri } from "@tauri-apps/api/core";
 
 import type { RecentProject } from "../../lib/types";
-import { persistenceListRecentProjects, persistenceOpenProject } from "../../lib/tauri-api";
+import type { SessionSnapshotMeta } from "../../lib/types";
+import {
+  persistenceListRecentProjects,
+  persistenceOpenProject,
+  sessionSnapshotAutosaveMeta,
+  sessionSnapshotList,
+} from "../../lib/tauri-api";
 import { useAppStore } from "../../lib/store";
 import { DashboardStats } from "./DashboardStats";
-
-function isTauriRuntime(): boolean {
-  const w = globalThis as unknown as { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown };
-  return !!(w.__TAURI__ || w.__TAURI_INTERNALS__);
-}
 
 function baseName(path: string): string {
   // Keep it OS-agnostic; the backend treats paths as strings too.
@@ -32,11 +34,21 @@ function relativeTime(iso: string): string {
 
 export function HomeScreen() {
   const setCurrentProject = useAppStore((s) => s.setCurrentProject);
+  const setPendingSessionRestoreId = useAppStore((s) => s.setPendingSessionRestoreId);
+  const autoSaveEnabled = useAppStore((s) => s.settings?.session?.autoSave ?? true);
+  const setOnboardingOpen = useAppStore((s) => s.setOnboardingOpen);
 
-  const tauriAvailable = useMemo(() => isTauriRuntime(), []);
+  const tauriAvailable = useMemo(() => isTauri(), []);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [autosave, setAutosave] = useState<{ project: RecentProject; meta: SessionSnapshotMeta } | null>(null);
+  const [autosaveDismissed, setAutosaveDismissed] = useState(false);
+
+  const [restoreProject, setRestoreProject] = useState<RecentProject | null>(null);
+  const [restoreList, setRestoreList] = useState<SessionSnapshotMeta[]>([]);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
 
   const refreshRecent = async () => {
     if (!tauriAvailable) return;
@@ -49,6 +61,26 @@ export function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tauriAvailable]);
 
+  useEffect(() => {
+    if (!tauriAvailable) return;
+    if (autosaveDismissed) return;
+    if (!autoSaveEnabled) {
+      setAutosave(null);
+      return;
+    }
+    const p = recentProjects[0];
+    if (!p?.path) {
+      setAutosave(null);
+      return;
+    }
+    sessionSnapshotAutosaveMeta(p.path)
+      .then((meta) => {
+        if (meta) setAutosave({ project: p, meta });
+        else setAutosave(null);
+      })
+      .catch(() => setAutosave(null));
+  }, [tauriAvailable, recentProjects, autosaveDismissed, autoSaveEnabled]);
+
   const openProject = async (path: string) => {
     setError(null);
     setBusy(true);
@@ -58,6 +90,34 @@ export function HomeScreen() {
     } catch (e) {
       setError(String(e));
       setBusy(false);
+    }
+  };
+
+  const openRestoreModal = async (p: RecentProject) => {
+    setRestoreError(null);
+    setRestoreProject(p);
+    setRestoreBusy(true);
+    try {
+      const list = await sessionSnapshotList(p.path);
+      setRestoreList(list);
+    } catch (e) {
+      setRestoreError(String(e));
+      setRestoreList([]);
+    } finally {
+      setRestoreBusy(false);
+    }
+  };
+
+  const restoreSnapshot = async (p: RecentProject, snap: SessionSnapshotMeta) => {
+    setRestoreError(null);
+    setRestoreBusy(true);
+    try {
+      const proj = await persistenceOpenProject(p.path);
+      setCurrentProject(proj);
+      setPendingSessionRestoreId(snap.id);
+    } catch (e) {
+      setRestoreError(String(e));
+      setRestoreBusy(false);
     }
   };
 
@@ -93,6 +153,15 @@ export function HomeScreen() {
             <div className="rounded-full border border-border bg-bg-secondary px-3 py-1 text-[11px] font-semibold tracking-wide text-text-secondary">
               Phase 1
             </div>
+            <button
+              className="rounded-full border border-border bg-bg-secondary px-3 py-1 text-[11px] font-semibold tracking-wide text-text-secondary hover:bg-bg-hover disabled:opacity-60"
+              disabled={!tauriAvailable}
+              onClick={() => setOnboardingOpen(true)}
+              type="button"
+              title="Manually open the first-run onboarding wizard"
+            >
+              Run Onboarding
+            </button>
           </div>
         </header>
 
@@ -105,6 +174,37 @@ export function HomeScreen() {
         {!tauriAvailable ? (
           <div className="mt-6 rounded-xl border border-border bg-bg-tertiary px-4 py-3 text-sm text-text-secondary">
             Browser preview mode: run `npm run tauri dev` to enable folder picker and recent projects.
+          </div>
+        ) : null}
+
+        {tauriAvailable && autosave && !autosaveDismissed ? (
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-accent-blue/35 bg-bg-secondary px-4 py-3 shadow-[0_16px_45px_rgba(88,166,255,0.08)]">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">Restore previous session?</div>
+              <div className="mt-0.5 truncate text-xs text-text-secondary">
+                Autosave for <span className="font-semibold text-text-primary">{autosave.project.name}</span>{" "}
+                from <span className="font-mono">{relativeTime(autosave.meta.savedAt)}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                className="rounded-lg border border-accent-blue/40 bg-bg-tertiary px-3 py-2 text-xs font-semibold text-text-primary hover:bg-bg-hover disabled:opacity-60"
+                disabled={busy}
+                onClick={() => openRestoreModal(autosave.project)}
+              >
+                Restore
+              </button>
+              <button
+                className="rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-60"
+                disabled={busy}
+                onClick={() => {
+                  setAutosaveDismissed(true);
+                  setAutosave(null);
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         ) : null}
 
@@ -220,11 +320,22 @@ export function HomeScreen() {
                 ) : (
                   <div className="grid grid-cols-1 gap-3">
                     {recentProjects.map((p) => (
-                      <button
+                      <div
                         key={p.path}
-                        className="group flex items-center gap-4 rounded-2xl border border-border bg-bg-tertiary px-4 py-3 text-left hover:border-accent-blue/40 hover:bg-bg-hover disabled:opacity-60"
-                        disabled={!tauriAvailable || busy}
-                        onClick={() => openProject(p.path)}
+                        role="button"
+                        tabIndex={0}
+                        className={[
+                          "group flex items-center gap-4 rounded-2xl border border-border bg-bg-tertiary px-4 py-3 text-left hover:border-accent-blue/40 hover:bg-bg-hover",
+                          !tauriAvailable || busy ? "opacity-60" : "",
+                        ].join(" ")}
+                        onClick={() => {
+                          if (!tauriAvailable || busy) return;
+                          openProject(p.path);
+                        }}
+                        onKeyDown={(e) => {
+                          if (!tauriAvailable || busy) return;
+                          if (e.key === "Enter" || e.key === " ") openProject(p.path);
+                        }}
                       >
                         <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-bg-primary font-mono text-xs text-text-secondary">
                           {p.name.slice(0, 2).toUpperCase()}
@@ -242,10 +353,22 @@ export function HomeScreen() {
                             {p.path}
                           </div>
                         </div>
-                        <div className="shrink-0 text-xs text-text-secondary">
-                          {relativeTime(p.lastOpened)}
+                        <div className="flex shrink-0 items-center gap-2">
+                          <div className="text-xs text-text-secondary">{relativeTime(p.lastOpened)}</div>
+                          <button
+                            className="rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-[11px] font-semibold text-text-secondary hover:bg-bg-hover disabled:opacity-60"
+                            disabled={!tauriAvailable || busy}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openRestoreModal(p);
+                            }}
+                            title="Restore saved session"
+                          >
+                            Restore...
+                          </button>
                         </div>
-                      </button>
+                      </div>
                     ))}
                   </div>
                 )}
@@ -254,7 +377,84 @@ export function HomeScreen() {
           </section>
         </main>
       </div>
+
+      {restoreProject ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-xl overflow-hidden rounded-3xl border border-border bg-bg-secondary shadow-[0_30px_90px_rgba(0,0,0,0.6)]">
+            <div className="flex items-start justify-between gap-3 border-b border-border bg-bg-tertiary px-5 py-4">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">Restore Session</div>
+                <div className="mt-0.5 truncate text-xs text-text-secondary">
+                  {restoreProject.name} <span className="font-mono opacity-75">{restoreProject.path}</span>
+                </div>
+              </div>
+              <button
+                className="rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-60"
+                disabled={restoreBusy}
+                onClick={() => {
+                  setRestoreProject(null);
+                  setRestoreList([]);
+                  setRestoreError(null);
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            {restoreError ? (
+              <div className="mx-5 mt-4 rounded-xl border border-accent-red/40 bg-bg-tertiary px-4 py-3 text-sm text-accent-red">
+                {restoreError}
+              </div>
+            ) : null}
+
+            <div className="px-5 py-4">
+              {restoreBusy ? (
+                <div className="rounded-2xl border border-border bg-bg-tertiary px-4 py-8 text-center text-sm text-text-secondary">
+                  Loading saved sessions...
+                </div>
+              ) : restoreList.length === 0 ? (
+                <div className="rounded-2xl border border-border bg-bg-tertiary px-4 py-8 text-center">
+                  <div className="text-sm font-semibold">No saved sessions</div>
+                  <div className="mt-2 text-xs text-text-secondary">
+                    Create sessions, then press <span className="font-mono">s</span> in navigation mode to save a layout.
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-2">
+                  {restoreList.map((snap) => (
+                    <button
+                      key={snap.id}
+                      className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-bg-tertiary px-4 py-3 text-left hover:border-accent-blue/40 hover:bg-bg-hover disabled:opacity-60"
+                      disabled={restoreBusy}
+                      onClick={() => restoreSnapshot(restoreProject, snap)}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <div className="truncate text-sm font-semibold text-text-primary">
+                            {snap.kind === "autosave" ? "Autosave" : snap.name}
+                          </div>
+                          <div className="rounded-full border border-border bg-bg-primary px-2 py-0.5 font-mono text-[10px] text-text-secondary">
+                            {snap.layout}
+                          </div>
+                          <div className="rounded-full border border-border bg-bg-primary px-2 py-0.5 font-mono text-[10px] text-text-secondary">
+                            {snap.sessionCount} panes
+                          </div>
+                        </div>
+                        <div className="mt-0.5 truncate font-mono text-[11px] text-text-secondary">
+                          {relativeTime(snap.savedAt)} · {snap.id}
+                        </div>
+                      </div>
+                      <div className="shrink-0 rounded-lg border border-accent-blue/40 bg-bg-primary px-3 py-2 text-xs font-semibold text-text-primary">
+                        Restore
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
-

@@ -1,5 +1,7 @@
 # TASK 2.1: Sidebar Shell
 > Phase 2 — Sidebar & Config | Single Session | Depends on: Task 1.4
+>
+> Status: ✅ Completed (2026-02-08)
 
 ## What to Build
 Collapsible left sidebar with section headers. Contains: project selector dropdown, orchestrator mode selector (UI only — no backend logic yet), session list showing active sessions.
@@ -285,5 +287,4 @@ project-root/
 ```
 
 ---
-
 

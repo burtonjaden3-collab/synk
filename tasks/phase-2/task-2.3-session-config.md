@@ -1,5 +1,7 @@
 # TASK 2.3: Per-Session Configuration
 > Phase 2 — Sidebar & Config | Single Session | Depends on: Task 2.1 + 2.2
+>
+> Status: ✅ Completed (2026-02-08)
 
 ## What to Build
 Click a session in the sidebar → see/edit its configuration: agent type, branch name, worktree toggle, which skills are enabled, which MCP servers to use. Save per-session config to .synk/config.json.
@@ -364,5 +366,4 @@ project-root/
 ```
 
 ---
-
 

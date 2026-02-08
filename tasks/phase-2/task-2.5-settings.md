@@ -1,5 +1,7 @@
 # TASK 2.5: Settings Panel
 > Phase 2 — Sidebar & Config | Single Session | Depends on: Task 2.1
+>
+> Status: ✅ Completed (2026-02-08)
 
 ## What to Build
 Full settings UI with tabbed layout. Manages all global settings including AI provider setup with dual auth (API key OR OAuth sign-in).
@@ -586,5 +588,4 @@ project-root/
 ```
 
 ---
-
 

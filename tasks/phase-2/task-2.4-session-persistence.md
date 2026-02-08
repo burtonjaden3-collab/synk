@@ -1,5 +1,7 @@
 # TASK 2.4: Session Persistence
 > Phase 2 — Sidebar & Config | Single Session | Depends on: Task 2.3
+>
+> Status: ✅ Completed (2026-02-08)
 
 ## What to Build
 Save and restore session layouts. Manual save with `s` key in navigation mode. Auto-save every 60 seconds. Crash recovery on next launch.
@@ -314,5 +316,4 @@ project-root/
 ```
 
 ---
-
 

@@ -4,21 +4,38 @@
     {
       "identifier": "synk",
       "description": "Synk app commands",
-      "commands": {
-        "allow": [
-          "session_create",
-          "session_destroy",
-          "session_write",
-          "session_resize",
-          "session_list",
-          "agents_list",
-          "list_recent_projects",
-          "open_project",
-          "debug_pool_stats",
-          "debug_pool_roundtrip"
-        ],
-        "deny": []
-      }
+        "commands": {
+          "allow": [
+            "session_create",
+            "session_destroy",
+            "session_write",
+            "session_resize",
+            "session_scrollback",
+            "session_list",
+            "agents_list",
+            "list_recent_projects",
+            "open_project",
+            "project_config_get",
+            "project_session_config_get",
+            "project_session_config_set",
+            "session_snapshot_save_named",
+            "session_snapshot_save_autosave",
+            "session_snapshot_list",
+            "session_snapshot_load",
+            "session_snapshot_autosave_meta",
+            "skills_discover",
+            "skills_set_enabled",
+            "mcp_discover",
+            "mcp_set_enabled",
+            "settings_get",
+            "settings_set",
+            "settings_validate_provider_key",
+            "settings_list_provider_models",
+            "debug_pool_stats",
+            "debug_pool_roundtrip"
+          ],
+          "deny": []
+        }
     }
   ]
 }

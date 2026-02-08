@@ -31,6 +31,12 @@ pub struct DestroySessionResponse {
     pub success: bool,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionScrollbackResponse {
+    pub data_b64: String,
+}
+
 #[tauri::command]
 pub fn session_create(
     app: tauri::AppHandle,
@@ -84,4 +90,16 @@ pub fn session_list(
 ) -> std::result::Result<Vec<SessionInfo>, String> {
     let guard = manager.lock().expect("session manager mutex poisoned");
     Ok(guard.list_sessions())
+}
+
+#[tauri::command]
+pub fn session_scrollback(
+    manager: State<'_, SharedSessionManager>,
+    args: SessionIdArgs,
+) -> std::result::Result<SessionScrollbackResponse, String> {
+    let guard = manager.lock().expect("session manager mutex poisoned");
+    let data_b64 = guard
+        .scrollback_b64(args.session_id)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(SessionScrollbackResponse { data_b64 })
 }

@@ -1,5 +1,7 @@
 # TASK 2.6: First Run Onboarding
 > Phase 2 — Sidebar & Config | Single Session | Depends on: Task 2.5
+>
+> Status: ✅ Completed (2026-02-08)
 
 ## What to Build
 First-launch wizard that appears when ~/.config/synk/ doesn't exist. 4 steps: Welcome → AI Provider Setup (dual auth) → Agent Detection → First Project.
@@ -499,5 +501,4 @@ project-root/
 ```
 
 ---
-
 

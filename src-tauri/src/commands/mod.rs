@@ -9,3 +9,5 @@ pub mod orchestrator;
 pub mod persistence;
 pub mod review;
 pub mod skills;
+pub mod settings;
+pub mod onboarding;

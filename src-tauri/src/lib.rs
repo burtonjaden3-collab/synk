@@ -4,12 +4,25 @@ mod events;
 
 use crate::core::agent_detection::{AgentRegistry, SharedAgentRegistry};
 use crate::commands::session::{
-    session_create, session_destroy, session_list, session_resize, session_write,
+    session_create, session_destroy, session_list, session_resize, session_scrollback, session_write,
 };
 use crate::commands::persistence::{list_recent_projects, open_project};
+use crate::commands::persistence::{project_config_get, project_session_config_get, project_session_config_set};
+use crate::commands::persistence::{
+    session_snapshot_autosave_meta, session_snapshot_list, session_snapshot_load,
+    session_snapshot_save_autosave, session_snapshot_save_named,
+};
+use crate::commands::skills::{skills_discover, skills_set_enabled};
+use crate::commands::mcp::{mcp_discover, mcp_set_enabled};
+use crate::commands::settings::{
+    settings_get, settings_list_provider_models, settings_set, settings_validate_provider_key,
+};
 use crate::core::process_pool::{PoolConfig, ProcessPool, SharedProcessPool};
 use crate::core::session_manager::{SessionManager, SharedSessionManager};
 use crate::commands::agents::agents_list;
+use crate::commands::onboarding::{onboarding_initialize, onboarding_is_first_run, onboarding_scan};
+use crate::core::mcp_server::{McpRuntime, SharedMcpRuntime};
+use crate::core::settings as core_settings;
 use tauri::Manager;
 
 #[tauri::command]
@@ -28,10 +41,12 @@ pub fn run() {
     let pool: SharedProcessPool = std::sync::Arc::new(std::sync::Mutex::new(ProcessPool::new(
         PoolConfig::default(),
     )));
-    ProcessPool::warmup_in_background(pool.clone());
 
     let agents: SharedAgentRegistry =
         std::sync::Arc::new(std::sync::Mutex::new(AgentRegistry::detect()));
+
+    let mcp_runtime: SharedMcpRuntime =
+        std::sync::Arc::new(std::sync::Mutex::new(McpRuntime::default()));
 
     let session_manager: SharedSessionManager =
         std::sync::Arc::new(std::sync::Mutex::new(SessionManager::new(
@@ -40,8 +55,9 @@ pub fn run() {
         )));
 
     let app = tauri::Builder::default()
-        .manage(pool)
+        .manage(pool.clone())
         .manage(agents)
+        .manage(mcp_runtime.clone())
         .manage(session_manager)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -49,16 +65,43 @@ pub fn run() {
             debug_pool_stats,
             debug_pool_roundtrip,
             agents_list,
+            onboarding_is_first_run,
+            onboarding_initialize,
+            onboarding_scan,
             list_recent_projects,
             open_project,
+            project_config_get,
+            project_session_config_get,
+            project_session_config_set,
+            session_snapshot_save_named,
+            session_snapshot_save_autosave,
+            session_snapshot_list,
+            session_snapshot_load,
+            session_snapshot_autosave_meta,
+            settings_get,
+            settings_set,
+            settings_validate_provider_key,
+            settings_list_provider_models,
+            skills_discover,
+            skills_set_enabled,
+            mcp_discover,
+            mcp_set_enabled,
             session_create,
             session_destroy,
             session_write,
             session_resize,
+            session_scrollback,
             session_list
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
+
+    // Load settings and apply pool config before warmup so warmup uses the user's config.
+    if let Ok(settings) = core_settings::settings_get(&app.handle()) {
+        let cfg = core_settings::pool_config_from_settings(&settings);
+        ProcessPool::reconfigure(pool.clone(), cfg);
+    }
+    ProcessPool::warmup_in_background(pool.clone());
 
     // Ensure we tear down child processes on exit (especially important during dev).
     let did_shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -83,5 +126,14 @@ pub fn run() {
 
         let pool = app_handle.state::<SharedProcessPool>().inner().clone();
         let _ = ProcessPool::shutdown(pool);
+
+        if let Ok(mut rt) = app_handle
+            .state::<SharedMcpRuntime>()
+            .inner()
+            .as_ref()
+            .try_lock()
+        {
+            rt.shutdown_all();
+        }
     });
 }

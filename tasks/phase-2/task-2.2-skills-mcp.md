@@ -1,5 +1,7 @@
 # TASK 2.2: Skills & MCP Discovery
 > Phase 2 — Sidebar & Config | Single Session | Depends on: Task 2.1
+>
+> Status: ✅ Completed (2026-02-08)
 
 ## What to Build
 Auto-detect installed Claude Code skills and MCP servers by reading config files on disk. Display them in the sidebar with toggle switches.
@@ -342,5 +344,4 @@ project-root/
 ```
 
 ---
-
 

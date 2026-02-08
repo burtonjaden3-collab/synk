@@ -359,6 +359,16 @@ impl ProcessPool {
         }
     }
 
+    pub fn reconfigure(pool: SharedProcessPool, config: PoolConfig) {
+        let mut guard = pool.lock().expect("pool mutex poisoned");
+        guard.config = config;
+    }
+
+    pub fn max_active(pool: SharedProcessPool) -> usize {
+        let guard = pool.lock().expect("pool mutex poisoned");
+        guard.config.max_active
+    }
+
     pub fn warmup_in_background(pool: SharedProcessPool) {
         thread::spawn(move || {
             let (config, target) = {

@@ -16,6 +16,8 @@ export function SessionGrid(props: {
   mode: InputMode;
   selectedSessionId: number | null;
   activeSessionId: number | null;
+  dimUnfocused?: boolean;
+  dimOpacity?: number;
   onSelectSession: (sessionId: number) => void;
   onActivateSession: (sessionId: number) => void;
   onExitToNav: (sessionId: number) => void;
@@ -41,7 +43,13 @@ export function SessionGrid(props: {
           mode={props.mode}
           selected={props.selectedSessionId === s.sessionId}
           active={props.activeSessionId === s.sessionId}
-          dimmed={props.mode === "terminal" && props.activeSessionId !== null && props.activeSessionId !== s.sessionId}
+          dimmed={
+            !!props.dimUnfocused &&
+            props.mode === "terminal" &&
+            props.activeSessionId !== null &&
+            props.activeSessionId !== s.sessionId
+          }
+          dimOpacity={props.dimOpacity}
           onSelect={() => props.onSelectSession(s.sessionId)}
           onActivate={() => props.onActivateSession(s.sessionId)}
           onExitToNav={() => props.onExitToNav(s.sessionId)}
