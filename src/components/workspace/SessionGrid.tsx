@@ -1,4 +1,5 @@
 import type { SessionInfo } from "../../lib/types";
+import type { InputMode } from "../../lib/keybindings";
 import { SessionPane } from "./SessionPane";
 
 function gridForCount(count: number) {
@@ -12,11 +13,17 @@ function gridForCount(count: number) {
 
 export function SessionGrid(props: {
   sessions: SessionInfo[];
+  mode: InputMode;
+  selectedSessionId: number | null;
+  activeSessionId: number | null;
+  onSelectSession: (sessionId: number) => void;
+  onActivateSession: (sessionId: number) => void;
+  onExitToNav: (sessionId: number) => void;
   registerOutputHandler: (sessionId: number, handler: (dataB64: string) => void) => void;
   unregisterOutputHandler: (sessionId: number) => void;
   onDestroySession: (sessionId: number) => void | Promise<void>;
 }) {
-  const sessions = [...props.sessions].sort((a, b) => a.paneIndex - b.paneIndex);
+  const sessions = props.sessions;
   const { cols, rows } = gridForCount(sessions.length);
 
   return (
@@ -31,6 +38,13 @@ export function SessionGrid(props: {
         <SessionPane
           key={s.sessionId}
           session={s}
+          mode={props.mode}
+          selected={props.selectedSessionId === s.sessionId}
+          active={props.activeSessionId === s.sessionId}
+          dimmed={props.mode === "terminal" && props.activeSessionId !== null && props.activeSessionId !== s.sessionId}
+          onSelect={() => props.onSelectSession(s.sessionId)}
+          onActivate={() => props.onActivateSession(s.sessionId)}
+          onExitToNav={() => props.onExitToNav(s.sessionId)}
           registerOutputHandler={props.registerOutputHandler}
           unregisterOutputHandler={props.unregisterOutputHandler}
           onDestroySession={props.onDestroySession}
@@ -39,4 +53,3 @@ export function SessionGrid(props: {
     </div>
   );
 }
-

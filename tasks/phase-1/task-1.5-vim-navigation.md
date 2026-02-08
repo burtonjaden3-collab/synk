@@ -1,6 +1,9 @@
 # TASK 1.5: Vim Navigation
 > Phase 1 — Foundation | Single Session | Depends on: Task 1.4
 
+## Status
+Completed (2026-02-08).
+
 ## What to Build
 Two-mode keyboard system: Navigation Mode (keys go to Synk) and Terminal Mode (keys go to PTY). Vim-style pane navigation with h/j/k/l. Visual focus indicators.
 
@@ -322,5 +325,3 @@ project-root/
 ```
 
 ---
-
-

@@ -11,18 +11,10 @@ use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 
 use crate::core::process_pool::{ProcessPool, PtyHandle, SharedProcessPool};
+use crate::core::agent_detection::{AgentType, SharedAgentRegistry};
 use crate::events::{SessionExitEvent, SessionOutputEvent};
 
 pub type SharedSessionManager = Arc<std::sync::Mutex<SessionManager>>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentType {
-    ClaudeCode,
-    GeminiCli,
-    Codex,
-    Terminal,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +32,9 @@ pub struct CreateSessionArgs {
 pub struct CreateSessionResponse {
     pub session_id: usize,
     pub pane_index: usize,
+    pub agent_type: AgentType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,14 +57,16 @@ struct SessionRecord {
 
 pub struct SessionManager {
     pool: SharedProcessPool,
+    agents: SharedAgentRegistry,
     next_session_id: usize,
     sessions: HashMap<usize, SessionRecord>,
 }
 
 impl SessionManager {
-    pub fn new(pool: SharedProcessPool) -> Self {
+    pub fn new(pool: SharedProcessPool, agents: SharedAgentRegistry) -> Self {
         Self {
             pool,
+            agents,
             next_session_id: 1,
             sessions: HashMap::new(),
         }
@@ -92,6 +89,8 @@ impl SessionManager {
 
         let mut handle = ProcessPool::claim(self.pool.clone(), session_id)?;
 
+        let (effective_agent_type, warning) = self.resolve_agent(&args.agent_type);
+
         // If anything fails after we claim the PTY, return it to the pool so we don't leak.
         let built = (|| -> Result<(SessionInfo, Arc<AtomicBool>, JoinHandle<()>)> {
             // Session bootstrap: cd + env exports.
@@ -112,11 +111,30 @@ impl SessionManager {
 
             handle.write_str(&format!("export SYNK_SESSION_ID='{}'\r\n", session_id))?;
             handle.write_str(&format!(
+                "export SYNK_AGENT_TYPE='{}'\r\n",
+                agent_type_to_env_value(effective_agent_type)
+            ))?;
+            handle.write_str(&format!(
                 "export SYNK_PROJECT_PATH='{}'\r\n",
                 shell_single_quote_escape(&args.project_path)
             ))?;
 
             handle.write_str(&format!("cd '{}'\r\n", shell_single_quote_escape(&wd)))?;
+
+            if let Some(w) = &warning {
+                // Make the warning visible in the terminal itself, too.
+                handle.write_str(&format!(
+                    "echo '[synk] {}'\r\n",
+                    shell_single_quote_escape(w)
+                ))?;
+            }
+
+            // Launch the agent CLI inside the claimed shell.
+            if effective_agent_type != AgentType::Terminal {
+                if let Some(cmd) = effective_agent_type.cli_command() {
+                    handle.write_str(&format!("{cmd}\r\n"))?;
+                }
+            }
 
             // Start output pump before we insert the session record, so we can return
             // a fully-active session.
@@ -131,7 +149,7 @@ impl SessionManager {
             let info = SessionInfo {
                 session_id,
                 pane_index,
-                agent_type: args.agent_type,
+                agent_type: effective_agent_type,
                 project_path: args.project_path,
                 branch: args.branch,
                 working_dir: Some(wd),
@@ -161,6 +179,8 @@ impl SessionManager {
         Ok(CreateSessionResponse {
             session_id,
             pane_index,
+            agent_type: effective_agent_type,
+            warning,
         })
     }
 
@@ -188,20 +208,33 @@ impl SessionManager {
             .remove(&session_id)
             .ok_or_else(|| anyhow!("unknown session_id {session_id}"))?;
 
-        rec.stop.store(true, Ordering::Relaxed);
-        let _ = rec.output_thread.join();
+        // Update pool accounting immediately so the user can close a session at the max limit
+        // and immediately open a new one without racing recycle/kill timeouts.
+        let pool = self.pool.clone();
+        let pool_config = ProcessPool::detach_active(pool.clone(), session_id);
 
-        // Return the PTY to the pool (recycle-or-kill is decided by PoolConfig).
-        ProcessPool::release(self.pool.clone(), session_id, rec.handle)?;
+        // Destroying a session can involve waiting for recycle/kill timeouts (seconds).
+        // If we do that work on the Tauri command thread it can freeze the app UI.
+        // Instead, remove the session from the manager immediately (above) and finish
+        // cleanup in the background.
+        std::thread::spawn(move || {
+            rec.stop.store(true, Ordering::Relaxed);
+            let _ = rec.output_thread.join();
 
-        // Best-effort: if the frontend cares, it can mark the pane closed.
-        let _ = app.emit(
-            "session:exit",
-            SessionExitEvent {
-                session_id,
-                exit_code: 0,
-            },
-        );
+            // Return the PTY to the pool (recycle-or-kill is decided by PoolConfig).
+            if let Err(err) = ProcessPool::release_detached(pool, rec.handle, pool_config, false) {
+                eprintln!("session_destroy: failed to release pty: {err:#}");
+            }
+
+            // Best-effort: if the frontend cares, it can mark the pane closed.
+            let _ = app.emit(
+                "session:exit",
+                SessionExitEvent {
+                    session_id,
+                    exit_code: 0,
+                },
+            );
+        });
 
         Ok(())
     }
@@ -210,6 +243,21 @@ impl SessionManager {
         let mut out: Vec<_> = self.sessions.values().map(|r| r.info.clone()).collect();
         out.sort_by_key(|s| s.pane_index);
         out
+    }
+
+    pub fn shutdown(&mut self) {
+        // Best-effort: stop all output pumps and kill session PTYs without attempting
+        // to recycle/refill the pool.
+        let sessions = std::mem::take(&mut self.sessions);
+        for (session_id, mut rec) in sessions {
+            rec.stop.store(true, Ordering::Relaxed);
+            let _ = rec.output_thread.join();
+
+            // Ensure pool accounting is cleared immediately.
+            let _ = ProcessPool::detach_active(self.pool.clone(), session_id);
+
+            rec.handle.kill();
+        }
     }
 
     fn alloc_session_id(&mut self) -> usize {
@@ -230,6 +278,29 @@ impl SessionManager {
             }
         }
         Err(anyhow!("no free pane index"))
+    }
+
+    fn resolve_agent(&self, requested: &AgentType) -> (AgentType, Option<String>) {
+        if *requested == AgentType::Terminal {
+            return (AgentType::Terminal, None);
+        }
+
+        let guard = self.agents.lock().expect("agent registry mutex poisoned");
+        if guard.is_installed(*requested) {
+            return (*requested, None);
+        }
+
+        let cmd = requested
+            .cli_command()
+            .unwrap_or_else(|| requested.display_name());
+        (
+            AgentType::Terminal,
+            Some(format!(
+                "{} not found (missing `{}` on PATH); falling back to Terminal",
+                requested.display_name(),
+                cmd
+            )),
+        )
     }
 }
 
@@ -310,4 +381,13 @@ fn spawn_output_pump(
 fn shell_single_quote_escape(s: &str) -> String {
     // Bash-safe single-quote escaping: ' -> '\''.
     s.replace('\'', "'\\''")
+}
+
+fn agent_type_to_env_value(t: AgentType) -> &'static str {
+    match t {
+        AgentType::ClaudeCode => "claude_code",
+        AgentType::GeminiCli => "gemini_cli",
+        AgentType::Codex => "codex",
+        AgentType::Terminal => "terminal",
+    }
 }

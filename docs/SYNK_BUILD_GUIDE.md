@@ -136,7 +136,7 @@ src-tauri/src/events.rs               (new — event type definitions)
 src-tauri/src/lib.rs                  (register commands)
 ```
 
-**Acceptance test:** From the frontend, invoke `session:create`, receive session ID. Write bytes, receive `session:output` events.
+**Acceptance test:** From the frontend, invoke `session_create`, receive session ID. Write bytes, receive `session:output` events.
 
 ---
 
@@ -167,6 +167,8 @@ src/styles/                               (tailwind config)
 ### Task 1.5: Vim Navigation
 **What:** Implement two-mode system (Navigation ↔ Terminal). h/j/k/l pane movement, Enter to focus, double-Escape to exit. Visual focus indicators (blue/green borders).
 
+**Status:** Done (2026-02-08).
+
 **Spec sections:** §25 (Vim Navigation — full section), §12 (Keyboard shortcuts table)
 
 **Depends on:** Task 1.4 (grid exists with panes to navigate)
@@ -184,6 +186,8 @@ src/components/workspace/SessionPane.tsx  (focus state styling)
 
 ### Task 1.6: Home Screen
 **What:** Build the home screen with "New Project" button, recent projects list (reads from projects.json), and dashboard stats placeholder.
+
+**Status:** Done (2026-02-08).
 
 **Spec sections:** §4.1 (Home Screen), §28 (Project Configuration — projects.json schema), §11 (UI Design)
 
@@ -207,16 +211,24 @@ package.json                           (add @tauri-apps/plugin-dialog if impleme
 ### Task 1.7: Agent Mode Selection
 **What:** When creating a session, pick agent type (Claude Code, Gemini CLI, Codex, Terminal). Auto-detect installed agents. Launch correct command in PTY.
 
+**Status:** Done (2026-02-08).
+
 **Spec sections:** §8.2 (Supported Agents table), §29 (Onboarding — agent detection step)
 
 **Depends on:** Task 1.3 (session creation works)
 
 **Files touched:**
 ```
+src-tauri/src/core/agent_detection.rs  (new)
+src-tauri/src/commands/agents.rs      (new)
+src-tauri/src/lib.rs                  (manage agent registry; register command)
+src-tauri/permissions/synk.json       (allow invoke command)
 src-tauri/src/core/session_manager.rs  (add agent type handling)
 src-tauri/src/commands/session.rs      (accept agentType on the wire; support agent_type as an alias in Rust)
+src/components/workspace/Workspace.tsx  (agent selector + warnings)
 src/components/workspace/SessionPane.tsx (agent badge in header)
-src/lib/types.ts                       (AgentType enum)
+src/lib/types.ts                        (AgentType enum)
+src/lib/tauri-api.ts                    (invoke wrapper)
 ```
 
 **Acceptance test:** Create a Claude Code session — `claude` command launches. Create a Terminal session — `$SHELL` launches. Missing agent shows warning.

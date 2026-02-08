@@ -31,7 +31,7 @@ pub struct DestroySessionResponse {
     pub success: bool,
 }
 
-#[tauri::command(rename = "session:create")]
+#[tauri::command]
 pub fn session_create(
     app: tauri::AppHandle,
     manager: State<'_, SharedSessionManager>,
@@ -43,7 +43,7 @@ pub fn session_create(
         .map_err(|e| format!("{e:#}"))
 }
 
-#[tauri::command(rename = "session:destroy")]
+#[tauri::command]
 pub fn session_destroy(
     app: tauri::AppHandle,
     manager: State<'_, SharedSessionManager>,
@@ -56,7 +56,7 @@ pub fn session_destroy(
         .map_err(|e| format!("{e:#}"))
 }
 
-#[tauri::command(rename = "session:write")]
+#[tauri::command]
 pub fn session_write(
     manager: State<'_, SharedSessionManager>,
     args: SessionWriteArgs,
@@ -67,7 +67,7 @@ pub fn session_write(
         .map_err(|e| format!("{e:#}"))
 }
 
-#[tauri::command(rename = "session:resize")]
+#[tauri::command]
 pub fn session_resize(
     manager: State<'_, SharedSessionManager>,
     args: SessionResizeArgs,
@@ -78,7 +78,7 @@ pub fn session_resize(
         .map_err(|e| format!("{e:#}"))
 }
 
-#[tauri::command(rename = "session:list")]
+#[tauri::command]
 pub fn session_list(
     manager: State<'_, SharedSessionManager>,
 ) -> std::result::Result<Vec<SessionInfo>, String> {

@@ -1,3 +1,4 @@
+pub mod agent_detection;
 pub mod process_pool;
 pub mod session_manager;
 

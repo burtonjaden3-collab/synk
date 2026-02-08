@@ -1,21 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "xterm";
 
 import { sessionResize, sessionWrite } from "../../lib/tauri-api";
 import type { SessionInfo } from "../../lib/types";
+import type { InputMode } from "../../lib/keybindings";
 
 function agentBadge(agentType: SessionInfo["agentType"]) {
   switch (agentType) {
     case "claude_code":
-      return { label: "Claude", color: "bg-accent-purple/20 text-accent-purple border-accent-purple/40" };
+      return { icon: "CL", label: "Claude", color: "bg-accent-purple/20 text-accent-purple border-accent-purple/40" };
     case "gemini_cli":
-      return { label: "Gemini", color: "bg-accent-blue/20 text-accent-blue border-accent-blue/40" };
+      return { icon: "GM", label: "Gemini", color: "bg-accent-blue/20 text-accent-blue border-accent-blue/40" };
     case "codex":
-      return { label: "Codex", color: "bg-accent-green/15 text-accent-green border-accent-green/40" };
+      return { icon: "CX", label: "Codex", color: "bg-accent-green/15 text-accent-green border-accent-green/40" };
     case "terminal":
     default:
-      return { label: "Terminal", color: "bg-bg-primary text-text-secondary border-border" };
+      return { icon: ">>", label: "Terminal", color: "bg-bg-primary text-text-secondary border-border" };
   }
 }
 
@@ -28,6 +29,13 @@ function decodeB64ToBytes(dataB64: string) {
 
 export function SessionPane(props: {
   session: SessionInfo;
+  mode: InputMode;
+  selected: boolean;
+  active: boolean;
+  dimmed: boolean;
+  onSelect: () => void;
+  onActivate: () => void;
+  onExitToNav: () => void;
   registerOutputHandler: (sessionId: number, handler: (dataB64: string) => void) => void;
   unregisterOutputHandler: (sessionId: number) => void;
   onDestroySession: (sessionId: number) => void | Promise<void>;
@@ -42,16 +50,19 @@ export function SessionPane(props: {
   const decoderRef = useRef<TextDecoder | null>(null);
 
   const resizeTimerRef = useRef<number | null>(null);
-  const [focused, setFocused] = useState(false);
 
   const badge = useMemo(() => agentBadge(session.agentType), [session.agentType]);
   const title = useMemo(() => `Pane ${session.paneIndex + 1}`, [session.paneIndex]);
 
   useEffect(() => {
+    if (props.active && props.mode === "terminal") {
+      termRef.current?.focus();
+    }
+  }, [props.active, props.mode]);
+
+  useEffect(() => {
     const host = xtermHostRef.current;
     if (!host) return;
-
-    const container = containerRef.current;
 
     const fit = new FitAddon();
     const term = new Terminal({
@@ -76,14 +87,6 @@ export function SessionPane(props: {
     const writeDisposable = term.onData((data) => {
       sessionWrite(session.sessionId, data).catch(() => {});
     });
-
-    const onWindowMouseDown = (ev: MouseEvent) => {
-      if (!container) return;
-      if (!container.contains(ev.target as Node)) {
-        setFocused(false);
-      }
-    };
-    window.addEventListener("mousedown", onWindowMouseDown, true);
 
     termRef.current = term;
     fitRef.current = fit;
@@ -119,8 +122,6 @@ export function SessionPane(props: {
       props.unregisterOutputHandler(session.sessionId);
       ro.disconnect();
 
-      window.removeEventListener("mousedown", onWindowMouseDown, true);
-
       if (resizeTimerRef.current !== null) {
         window.clearTimeout(resizeTimerRef.current);
       }
@@ -141,19 +142,39 @@ export function SessionPane(props: {
       ref={containerRef}
       className={[
         "flex h-full min-h-0 flex-col overflow-hidden rounded-xl border bg-bg-secondary shadow-[0_18px_50px_rgba(0,0,0,0.35)]",
-        focused ? "border-accent-blue/70" : "border-border",
+        props.mode === "terminal" && props.active ? "border-accent-green/70" : "",
+        props.mode === "navigation" && props.selected ? "border-accent-blue/70" : "",
+        props.mode === "navigation" && !props.selected ? "border-border" : "",
+        props.mode === "terminal" && !props.active ? "border-border" : "",
+        props.dimmed ? "opacity-70" : "",
       ].join(" ")}
-      onMouseDown={() => {
-        termRef.current?.focus();
+      onMouseDown={(e) => {
+        // Only consider clicks inside the pane body as "activate terminal".
+        // The header has its own behavior (select / exit terminal mode).
+        if ((e.target as HTMLElement | null)?.closest("[data-synk-pane-header]")) return;
+        props.onActivate();
       }}
     >
-      <div className="flex h-9 items-center gap-2 border-b border-border bg-bg-tertiary px-3">
+      <div
+        data-synk-pane-header
+        className="flex h-9 items-center gap-2 border-b border-border bg-bg-tertiary px-3"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          // Header click is a safe way to select without typing.
+          props.onSelect();
+          if (props.mode === "terminal" && props.active) {
+            props.onExitToNav();
+          }
+        }}
+      >
         <div
           className={[
             "rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide",
             badge.color,
           ].join(" ")}
         >
+          <span className="mr-1 inline-block font-mono text-[10px] opacity-80">{badge.icon}</span>
           {badge.label}
         </div>
         <div className="text-xs font-medium text-text-primary">{title}</div>

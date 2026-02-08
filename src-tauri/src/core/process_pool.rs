@@ -68,7 +68,6 @@ pub enum PtyState {
 
 pub struct PtyHandle {
     pub pid: Option<u32>,
-    pub shell: String,
     pub created_at: Instant,
     pub state: PtyState,
 
@@ -453,16 +452,10 @@ impl ProcessPool {
         Self::release_inner(pool, session_key, handle, false)
     }
 
-    pub fn recycle(pool: SharedProcessPool, session_key: usize, handle: PtyHandle) -> Result<()> {
-        // Explicit API for the Task 1.2 deliverable.
-        // This forces the recycle path even if recycle is disabled in the global config.
-        Self::release_inner(pool, session_key, handle, true)
-    }
-
     fn release_inner(
         pool: SharedProcessPool,
         session_key: usize,
-        mut handle: PtyHandle,
+        handle: PtyHandle,
         force_recycle: bool,
     ) -> Result<()> {
         let config = {
@@ -474,6 +467,36 @@ impl ProcessPool {
             guard.config.clone()
         };
 
+        Self::release_after_deactivate(pool, handle, config, force_recycle)
+    }
+
+    /// Removes the session from the "active" tracking map and returns the pool config.
+    ///
+    /// This is intentionally best-effort (missing keys are allowed) so callers can
+    /// ensure max-active accounting is updated immediately without blocking on
+    /// recycle/kill timeouts.
+    pub fn detach_active(pool: SharedProcessPool, session_key: usize) -> PoolConfig {
+        let mut guard = pool.lock().expect("pool mutex poisoned");
+        let _ = guard.active.remove(&session_key);
+        guard.config.clone()
+    }
+
+    /// Completes a release when the session has already been detached from `active`.
+    pub fn release_detached(
+        pool: SharedProcessPool,
+        handle: PtyHandle,
+        config: PoolConfig,
+        force_recycle: bool,
+    ) -> Result<()> {
+        Self::release_after_deactivate(pool, handle, config, force_recycle)
+    }
+
+    fn release_after_deactivate(
+        pool: SharedProcessPool,
+        mut handle: PtyHandle,
+        config: PoolConfig,
+        force_recycle: bool,
+    ) -> Result<()> {
         let should_recycle =
             (config.recycle_enabled || force_recycle) && handle.age() < config.max_pty_age;
         if should_recycle {
@@ -482,18 +505,25 @@ impl ProcessPool {
                 .recycle_to_idle(&token, config.recycle_ready_timeout)
                 .is_ok()
             {
+                let mut handle_opt = Some(handle);
                 {
                     let mut guard = pool.lock().expect("pool mutex poisoned");
                     if guard.idle_pool.len() < guard.config.max_pool_size {
-                        guard.idle_pool.push_back(handle);
-                    } else {
-                        // Pool full; kill so we don't leave it running unmanaged.
-                        drop(guard);
-                        let mut h = handle;
-                        h.kill();
+                        // Move the handle into the idle pool.
+                        guard
+                            .idle_pool
+                            .push_back(handle_opt.take().expect("handle already moved"));
                     }
                 }
 
+                if handle_opt.is_none() {
+                    schedule_refill_if_needed(pool);
+                    return Ok(());
+                }
+
+                // Pool full; kill so we don't leave it running unmanaged.
+                let mut handle = handle_opt.expect("handle missing after pool check");
+                handle.kill();
                 schedule_refill_if_needed(pool);
                 return Ok(());
             }
@@ -619,7 +649,6 @@ fn spawn_shell_pty(config: &PoolConfig) -> Result<PtyHandle> {
 
     Ok(PtyHandle {
         pid,
-        shell: config.default_shell.clone(),
         created_at: Instant::now(),
         state: PtyState::Warming,
         master: pair.master,

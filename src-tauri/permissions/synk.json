@@ -6,11 +6,14 @@
       "description": "Synk app commands",
       "commands": {
         "allow": [
-          "session:create",
-          "session:destroy",
-          "session:write",
-          "session:resize",
-          "session:list",
+          "session_create",
+          "session_destroy",
+          "session_write",
+          "session_resize",
+          "session_list",
+          "agents_list",
+          "list_recent_projects",
+          "open_project",
           "debug_pool_stats",
           "debug_pool_roundtrip"
         ],

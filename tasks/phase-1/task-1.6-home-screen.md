@@ -1,6 +1,9 @@
 # TASK 1.6: Home Screen
 > Phase 1 — Foundation | Single Session | Depends on: Task 1.4
 
+## Status
+Completed (2026-02-08). Home screen, recent projects persistence, and native folder picker are wired; "New Project" is present but the wizard is deferred to later phases.
+
 ## What to Build
 Home screen that shows on app launch. Recent projects list (from projects.json), "New Project" and "Open Folder" buttons, dashboard stats placeholder. Routing between Home Screen and Workspace.
 
@@ -360,5 +363,3 @@ project-root/
 ```
 
 ---
-
-

@@ -1,6 +1,9 @@
 # TASK 1.7: Agent Mode Selection
 > Phase 1 — Foundation | Single Session | Depends on: Task 1.3
 
+## Status
+Completed (2026-02-08).
+
 ## What to Build
 When creating a session, user picks an agent type. Auto-detect which agents are installed on the system. Launch the correct command in the PTY.
 
@@ -14,7 +17,7 @@ When creating a session, user picks an agent type. Auto-detect which agents are 
 
 ## Deliverables
 1. Agent detection: run `which` for each agent on startup, store results
-2. `session:create` accepts `agentType` parameter (camelCase on the wire; backend can use serde rename/aliases)
+2. `session_create` accepts `agentType` parameter (camelCase on the wire; backend can use serde rename/aliases)
 3. Session manager launches correct command based on agent type
 4. Pane header shows agent badge (icon + name) and colored status dot
 5. If selected agent not installed → show warning, offer Terminal fallback

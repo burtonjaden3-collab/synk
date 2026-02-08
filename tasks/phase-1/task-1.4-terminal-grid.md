@@ -14,7 +14,7 @@ React terminal grid using xterm.js. Sessions display in an auto-reflowing grid (
 4. `tauri-api.ts` — typed invoke() wrappers for session commands
 5. `types.ts` — TypeScript interfaces for Session, AgentType, etc.
 6. Terminal output renders correctly with colors/ANSI codes
-7. Terminal input sends keystrokes to PTY via session:write
+7. Terminal input sends keystrokes to PTY via `session_write` (through `src/lib/tauri-api.ts`)
 
 ## Grid Layout Rules
 **Notation:** `cols×rows` (e.g. `2×1` = 2 columns side-by-side).

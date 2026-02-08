@@ -7,6 +7,8 @@ Completed (2026-02-07) in `cdb32ca`.
 ## What to Build
 Session CRUD: create session (claims from PTY pool), write to PTY stdin, read PTY stdout via events, resize, destroy. Wire up Tauri IPC commands and events for terminal I/O.
 
+**Implementation note:** This repo uses snake_case Tauri command names (e.g. `session_create`, `session_write`, `session_list`) and a typed wrapper in `src/lib/tauri-api.ts`. The `session:*` command names in the spec excerpt below are kept as reference for future phases.
+
 ## Deliverables
 1. `session_manager.rs` — full implementation: create, write, resize, kill, list sessions
 2. `commands/session.rs` — Tauri command handlers wrapping the session manager
@@ -24,7 +26,7 @@ src-tauri/src/lib.rs                  (register commands with tauri::Builder)
 ```
 
 ## Acceptance Test
-Frontend invokes `session:create` → gets session ID back. Invoke `session:write` with text → receive `session:output` event with shell response. Create 12 sessions, try 13th → get max sessions error.
+Frontend invokes `session_create` → gets session ID back. Invoke `session_write` with text → receive `session:output` event with shell response. Create 12 sessions, try 13th → get max sessions error.
 
 ---
 ## SPEC REFERENCE (Read all of this carefully)

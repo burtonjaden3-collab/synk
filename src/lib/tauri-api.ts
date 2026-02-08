@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import type {
+  DetectedAgent,
+  RecentProject,
   SessionCreateArgs,
   SessionCreateResponse,
   SessionExitEvent,
@@ -10,27 +12,36 @@ import type {
   SessionOutputEvent,
 } from "./types";
 
+export function agentsList() {
+  return invoke<DetectedAgent[]>("agents_list");
+}
+
+export function persistenceListRecentProjects() {
+  return invoke<RecentProject[]>("list_recent_projects");
+}
+
+export function persistenceOpenProject(path: string) {
+  return invoke<RecentProject>("open_project", { args: { path } });
+}
+
 export function sessionCreate(args: SessionCreateArgs) {
-  return invoke<SessionCreateResponse>(
-    "session:create",
-    args as unknown as Record<string, unknown>,
-  );
+  return invoke<SessionCreateResponse>("session_create", { args });
 }
 
 export function sessionDestroy(sessionId: SessionId) {
-  return invoke<{ success: boolean }>("session:destroy", { sessionId });
+  return invoke<{ success: boolean }>("session_destroy", { args: { sessionId } });
 }
 
 export function sessionWrite(sessionId: SessionId, data: string) {
-  return invoke<void>("session:write", { sessionId, data });
+  return invoke<void>("session_write", { args: { sessionId, data } });
 }
 
 export function sessionResize(sessionId: SessionId, cols: number, rows: number) {
-  return invoke<void>("session:resize", { sessionId, cols, rows });
+  return invoke<void>("session_resize", { args: { sessionId, cols, rows } });
 }
 
 export function sessionList() {
-  return invoke<SessionInfo[]>("session:list");
+  return invoke<SessionInfo[]>("session_list");
 }
 
 export async function onSessionOutput(

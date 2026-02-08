@@ -10,7 +10,7 @@ npm run tauri dev
 ```
 
 If you run `npm run dev` directly, you're running in a normal browser context (no Tauri backend),
-so session IPC commands (like `session:list`) won't exist.
+so session IPC commands (like `session_list`) won't exist.
 
 ## Recommended IDE Setup
 
