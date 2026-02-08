@@ -4,6 +4,7 @@ pub mod session;
 pub mod agents;
 pub mod ai_provider;
 pub mod git;
+pub mod localhost;
 pub mod mcp;
 pub mod onboarding;
 pub mod orchestrator;

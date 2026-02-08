@@ -119,6 +119,53 @@ export interface ProjectConfigView {
 }
 
 // -----------------------------------------------------------------------------
+// Localhost sessions (Phase 4)
+// -----------------------------------------------------------------------------
+
+export type LocalhostSessionType = "web" | "desktop";
+export type LocalhostPortMode = "auto" | "manual";
+export type LocalhostSessionStatus = "stopped" | "starting" | "running" | "exited";
+
+export interface LocalhostSessionSpec {
+  id: string;
+  projectPath: string;
+  workingDir: string;
+  sourceLabel: string; // e.g. "main" or "feat/phase4"
+  type: LocalhostSessionType;
+  portMode: LocalhostPortMode;
+  preferredPort?: number | null;
+  autoInstallDeps: boolean;
+  createdAt?: string | null;
+}
+
+export interface LocalhostSessionView extends LocalhostSessionSpec {
+  status: LocalhostSessionStatus;
+  port?: number | null;
+  pid?: number | null;
+  url?: string | null;
+  lastExitCode?: number | null;
+  cmdline?: string | null;
+}
+
+export interface LocalhostSessionLogEvent {
+  projectPath: string;
+  id: string;
+  stream: "stdout" | "stderr";
+  line: string;
+  timestamp: string; // RFC3339
+}
+
+export interface LocalhostSessionStatusEvent {
+  projectPath: string;
+  id: string;
+  status: LocalhostSessionStatus;
+  port?: number | null;
+  pid?: number | null;
+  url?: string | null;
+  lastExitCode?: number | null;
+}
+
+// -----------------------------------------------------------------------------
 // Git (Phase 3A)
 // -----------------------------------------------------------------------------
 

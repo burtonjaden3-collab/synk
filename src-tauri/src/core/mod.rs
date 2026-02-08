@@ -6,6 +6,7 @@ pub mod session_manager;
 pub mod cost_tracker;
 pub mod git_events;
 pub mod git_manager;
+pub mod localhost_runtime;
 pub mod mcp_discovery;
 pub mod mcp_server;
 pub mod persistence;

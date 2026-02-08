@@ -188,6 +188,7 @@ impl Default for UiDisk {
             drawer_panel_order: vec![
                 "cost".to_string(),
                 "git".to_string(),
+                "localhost".to_string(),
                 "tasks".to_string(),
                 "reviews".to_string(),
             ],

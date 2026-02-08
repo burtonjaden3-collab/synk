@@ -5,9 +5,10 @@ import { settingsSet } from "../../lib/tauri-api";
 import { useAppStore } from "../../lib/store";
 import { isEditableTarget, stopEvent } from "../../lib/keybindings";
 import { GitActivityFeed } from "./GitActivityFeed";
+import { LocalhostSessions } from "./LocalhostSessions";
 import { ReviewQueue } from "./ReviewQueue";
 
-type PanelId = "cost" | "git" | "tasks" | "reviews";
+type PanelId = "cost" | "git" | "localhost" | "tasks" | "reviews";
 
 type PanelDef = {
   id: PanelId;
@@ -19,6 +20,7 @@ type PanelDef = {
 const PANELS: PanelDef[] = [
   { id: "cost", title: "Cost Tracker", emoji: "💰", hint: "Per-session tokens and totals" },
   { id: "git", title: "Git Activity", emoji: "📊", hint: "Commits, merges, conflicts" },
+  { id: "localhost", title: "Localhost", emoji: "🌐", hint: "Run and preview branches/worktrees" },
   { id: "tasks", title: "Task Queue", emoji: "📋", hint: "Queue and progress" },
   { id: "reviews", title: "Review Queue", emoji: "🔍", hint: "Diffs and approvals" },
 ];
@@ -276,6 +278,8 @@ export function BottomDrawer(props: { tauriAvailable: boolean; mode: "navigation
           <div className="p-4">
             {active === "git" ? (
               <GitActivityFeed tauriAvailable={tauriAvailable} projectPath={currentProject?.path ?? null} />
+            ) : active === "localhost" ? (
+              <LocalhostSessions tauriAvailable={tauriAvailable} projectPath={currentProject?.path ?? null} />
             ) : active === "reviews" ? (
               <ReviewQueue tauriAvailable={tauriAvailable} projectPath={currentProject?.path ?? null} />
             ) : (

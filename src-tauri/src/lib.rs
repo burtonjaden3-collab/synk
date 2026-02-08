@@ -8,6 +8,10 @@ use crate::commands::git::{
     git_detect_orphans, git_ensure_worktree, git_list_worktrees, git_remove_worktree,
 };
 use crate::commands::mcp::{mcp_discover, mcp_set_enabled};
+use crate::commands::localhost::{
+    localhost_session_delete, localhost_session_list, localhost_session_logs, localhost_session_restart,
+    localhost_session_start, localhost_session_stop, localhost_session_upsert,
+};
 use crate::commands::onboarding::{
     onboarding_initialize, onboarding_is_first_run, onboarding_scan,
 };
@@ -33,6 +37,7 @@ use crate::commands::settings::{
 use crate::commands::skills::{skills_discover, skills_set_enabled};
 use crate::core::agent_detection::{AgentRegistry, SharedAgentRegistry};
 use crate::core::git_events::{GitEventWatcher, SharedGitEventWatcher};
+use crate::core::localhost_runtime::{LocalhostRuntime, SharedLocalhostRuntime};
 use crate::core::mcp_server::{McpRuntime, SharedMcpRuntime};
 use crate::core::process_pool::{PoolConfig, ProcessPool, SharedProcessPool};
 use crate::core::session_manager::{SessionManager, SharedSessionManager};
@@ -62,6 +67,9 @@ pub fn run() {
     let mcp_runtime: SharedMcpRuntime =
         std::sync::Arc::new(std::sync::Mutex::new(McpRuntime::default()));
 
+    let localhost_runtime: SharedLocalhostRuntime =
+        std::sync::Arc::new(std::sync::Mutex::new(LocalhostRuntime::default()));
+
     let session_manager: SharedSessionManager = std::sync::Arc::new(std::sync::Mutex::new(
         SessionManager::new(pool.clone(), agents.clone()),
     ));
@@ -75,6 +83,7 @@ pub fn run() {
         .manage(pool.clone())
         .manage(agents)
         .manage(mcp_runtime.clone())
+        .manage(localhost_runtime.clone())
         .manage(session_manager)
         .manage(git_watcher)
         .plugin(tauri_plugin_dialog::init())
@@ -130,6 +139,13 @@ pub fn run() {
             review_set_merge_strategy,
             review_add_comment,
             review_resolve_comment,
+            localhost_session_list,
+            localhost_session_upsert,
+            localhost_session_delete,
+            localhost_session_start,
+            localhost_session_stop,
+            localhost_session_restart,
+            localhost_session_logs,
             session_create,
             session_destroy,
             session_write,
@@ -183,6 +199,15 @@ pub fn run() {
             .try_lock()
         {
             rt.shutdown_all();
+        }
+
+        if let Ok(mut rt) = app_handle
+            .state::<SharedLocalhostRuntime>()
+            .inner()
+            .as_ref()
+            .try_lock()
+        {
+            rt.shutdown_all(app_handle.clone());
         }
 
         if let Ok(mut gw) = app_handle
