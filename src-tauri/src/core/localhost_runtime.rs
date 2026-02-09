@@ -646,6 +646,9 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
             c.current_dir(&working_dir)
                 .arg("tauri")
                 .arg("dev")
+                // Avoid inotify watch-limit failures when users run multiple worktrees/dev instances.
+                // Users can still restart the session after code changes.
+                .arg("--no-watch")
                 .arg("-c")
                 .arg(merged.to_string())
                 .envs(envs.iter())
