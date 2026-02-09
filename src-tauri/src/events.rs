@@ -69,3 +69,36 @@ pub fn now_rfc3339() -> String {
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
+
+// -----------------------------------------------------------------------------
+// Localhost sessions (Phase 4)
+// -----------------------------------------------------------------------------
+
+pub const LOCALHOST_LOG_EVENT_NAME: &str = "localhost:log";
+pub const LOCALHOST_STATUS_EVENT_NAME: &str = "localhost:status";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalhostSessionLogEvent {
+    pub project_path: String,
+    pub id: String,
+    pub stream: String, // "stdout" | "stderr"
+    pub line: String,
+    pub timestamp: String, // RFC3339
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalhostSessionStatusEvent {
+    pub project_path: String,
+    pub id: String,
+    pub status: crate::core::localhost_runtime::LocalhostSessionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_exit_code: Option<i32>,
+}

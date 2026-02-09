@@ -32,6 +32,10 @@ import type {
   ReviewItem,
   ReviewStatus,
   ReviewDecision,
+  LocalhostSessionLogEvent,
+  LocalhostSessionSpec,
+  LocalhostSessionStatusEvent,
+  LocalhostSessionView,
 } from "./types";
 
 export function agentsList() {
@@ -242,6 +246,48 @@ export async function onSessionExit(handler: (payload: SessionExitEvent) => void
 
 export async function onGitEvent(handler: (payload: GitEvent) => void) {
   return listen<GitEvent>("git:event", (event) => handler(event.payload));
+}
+
+// -----------------------------------------------------------------------------
+// Localhost sessions (Phase 4)
+// -----------------------------------------------------------------------------
+
+export function localhostSessionList(projectPath: string) {
+  return invoke<LocalhostSessionView[]>("localhost_session_list", { args: { projectPath } });
+}
+
+export function localhostSessionUpsert(
+  spec: Omit<LocalhostSessionSpec, "id" | "createdAt"> & { id?: string | null },
+) {
+  return invoke<LocalhostSessionView[]>("localhost_session_upsert", { args: { spec } });
+}
+
+export function localhostSessionDelete(projectPath: string, id: string) {
+  return invoke<LocalhostSessionView[]>("localhost_session_delete", { args: { projectPath, id } });
+}
+
+export function localhostSessionStart(projectPath: string, id: string) {
+  return invoke<LocalhostSessionView>("localhost_session_start", { args: { projectPath, id } });
+}
+
+export function localhostSessionStop(projectPath: string, id: string) {
+  return invoke<LocalhostSessionView>("localhost_session_stop", { args: { projectPath, id } });
+}
+
+export function localhostSessionRestart(projectPath: string, id: string) {
+  return invoke<LocalhostSessionView>("localhost_session_restart", { args: { projectPath, id } });
+}
+
+export function localhostSessionLogs(projectPath: string, id: string) {
+  return invoke<string[]>("localhost_session_logs", { args: { projectPath, id } });
+}
+
+export async function onLocalhostSessionLog(handler: (payload: LocalhostSessionLogEvent) => void) {
+  return listen<LocalhostSessionLogEvent>("localhost:log", (event) => handler(event.payload));
+}
+
+export async function onLocalhostSessionStatus(handler: (payload: LocalhostSessionStatusEvent) => void) {
+  return listen<LocalhostSessionStatusEvent>("localhost:status", (event) => handler(event.payload));
 }
 
 export function skillsDiscover(projectPath?: string | null) {
