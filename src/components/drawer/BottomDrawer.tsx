@@ -8,7 +8,7 @@ import { GitActivityFeed } from "./GitActivityFeed";
 import { LocalhostSessions } from "./LocalhostSessions";
 import { ReviewQueue } from "./ReviewQueue";
 
-type PanelId = "cost" | "git" | "localhost" | "tasks" | "reviews";
+type PanelId = "cost" | "git" | "localhost" | "reviews";
 
 type PanelDef = {
   id: PanelId;
@@ -21,7 +21,6 @@ const PANELS: PanelDef[] = [
   { id: "cost", title: "Cost Tracker", emoji: "💰", hint: "Per-session tokens and totals" },
   { id: "git", title: "Git Activity", emoji: "📊", hint: "Commits, merges, conflicts" },
   { id: "localhost", title: "Localhost", emoji: "🌐", hint: "Run and preview branches/worktrees" },
-  { id: "tasks", title: "Task Queue", emoji: "📋", hint: "Queue and progress" },
   { id: "reviews", title: "Review Queue", emoji: "🔍", hint: "Diffs and approvals" },
 ];
 
@@ -59,7 +58,7 @@ export function BottomDrawer(props: { tauriAvailable: boolean; mode: "navigation
   const setSettings = useAppStore((s) => s.setSettings);
 
   const savedHeight = settings?.ui?.drawerHeight ?? 250;
-  const savedOrder = settings?.ui?.drawerPanelOrder ?? ["cost", "git", "tasks", "reviews"];
+  const savedOrder = settings?.ui?.drawerPanelOrder ?? ["cost", "git", "reviews"];
 
   const [panelOrder, setPanelOrder] = useState<PanelId[]>(() => dedupePanels(savedOrder));
   const [active, setActive] = useState<PanelId>(() => panelOrder[0] ?? "cost");

@@ -34,7 +34,6 @@ type TabId =
   | "notifications"
   | "git"
   | "sessions"
-  | "integrations"
   | "about";
 
 function defaultSettings(): AppSettings {
@@ -111,8 +110,6 @@ function tabLabel(id: TabId) {
       return { title: "Git", hint: "merge + worktrees" };
     case "sessions":
       return { title: "Sessions", hint: "auto-save" };
-    case "integrations":
-      return { title: "Integrations", hint: "gastown" };
     case "about":
       return { title: "About", hint: "build + paths" };
   }
@@ -145,7 +142,7 @@ export function Settings(props: SettingsProps) {
   const validateTimersRef = useRef<Record<string, number | null>>({});
 
   const tabs: TabId[] = useMemo(
-    () => ["ai", "performance", "keyboard", "appearance", "notifications", "git", "sessions", "integrations", "about"],
+    () => ["ai", "performance", "keyboard", "appearance", "notifications", "git", "sessions", "about"],
     [],
   );
 
@@ -1202,61 +1199,6 @@ export function Settings(props: SettingsProps) {
                       </div>
                       <div className="mt-3 rounded-xl border border-border bg-bg-tertiary px-3 py-3 text-[11px] text-text-secondary">
                         Snapshot files live in <span className="font-mono">~/.config/synk/sessions/</span>.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {tab === "integrations" ? (
-                <div>
-                  <div className="text-lg font-semibold tracking-tight">Integrations</div>
-                  <div className="mt-1 text-sm text-text-secondary">External tools and paths.</div>
-
-                  <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
-                    <div className="rounded-2xl border border-border bg-bg-secondary p-4">
-                      <div className="text-sm font-semibold">Gastown</div>
-                      <div className="mt-3 grid grid-cols-1 gap-3">
-                        <label className="block">
-                          <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">
-                            CLI PATH
-                          </div>
-                          <input
-                            className="mt-1 h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 font-mono text-[12px] text-text-primary"
-                            placeholder="(auto-detect later)"
-                            value={s.gastown.cliPath ?? ""}
-                            onChange={(e) =>
-                              setDraftAndSave({
-                                ...s,
-                                gastown: { ...s.gastown, cliPath: e.target.value ? e.target.value : null },
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="block">
-                          <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">
-                            WORKSPACE PATH
-                          </div>
-                          <input
-                            className="mt-1 h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 font-mono text-[12px] text-text-primary"
-                            value={s.gastown.workspacePath}
-                            onChange={(e) =>
-                              setDraftAndSave({ ...s, gastown: { ...s.gastown, workspacePath: e.target.value } })
-                            }
-                          />
-                        </label>
-                        <label className="block">
-                          <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">
-                            PINNED VERSION
-                          </div>
-                          <input
-                            className="mt-1 h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
-                            value={s.gastown.pinnedVersion}
-                            onChange={(e) =>
-                              setDraftAndSave({ ...s, gastown: { ...s.gastown, pinnedVersion: e.target.value } })
-                            }
-                          />
-                        </label>
                       </div>
                     </div>
                   </div>

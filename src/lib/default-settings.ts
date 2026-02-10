@@ -49,7 +49,7 @@ export function defaultAppSettings(): AppSettings {
     ui: {
       sidebarWidth: 280,
       drawerHeight: 250,
-      drawerPanelOrder: ["cost", "git", "localhost", "tasks", "reviews"],
+      drawerPanelOrder: ["cost", "git", "localhost", "reviews"],
       showSessionCostInHeader: true,
       dimUnfocusedPanes: true,
       unfocusedOpacity: 0.7,

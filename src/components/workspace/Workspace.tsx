@@ -62,14 +62,12 @@ export function Workspace() {
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>(
-    currentProject?.orchestrationMode ?? "manual",
-  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const tauriAvailable = useMemo(() => isTauri(), []);
+  const orchestrationMode: OrchestrationMode = "manual";
 
   const outputHandlersRef = useRef<Map<number, OutputHandler>>(new Map());
   const escapeTimerRef = useRef<number | null>(null);
@@ -132,12 +130,6 @@ export function Workspace() {
       .then((cfg) => setProjectConfig(cfg))
       .catch(() => setProjectConfig(null));
   }, [tauriAvailable, currentProject?.path, setProjectConfig]);
-
-  useEffect(() => {
-    if (currentProject?.orchestrationMode) {
-      setOrchestrationMode(currentProject.orchestrationMode);
-    }
-  }, [currentProject?.orchestrationMode]);
 
   const orderedSessions = useMemo(
     () => [...sessions].sort((a, b) => a.paneIndex - b.paneIndex),
@@ -693,11 +685,6 @@ export function Workspace() {
             } catch (e) {
               setError(String(e));
             }
-          }}
-          orchestrationMode={orchestrationMode}
-          onChangeOrchestrationMode={(m) => {
-            // Phase 2.1: UI only. Persisting to .synk/config.json comes later.
-            setOrchestrationMode(m);
           }}
           sessions={orderedSessions}
           selectedSessionId={selectedSessionId as SessionId | null}

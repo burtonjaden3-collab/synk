@@ -1,9 +1,8 @@
 import { useMemo, useState } from "react";
 
-import type { OrchestrationMode, RecentProject, SessionId, SessionInfo } from "../../lib/types";
+import type { RecentProject, SessionId, SessionInfo } from "../../lib/types";
 import { AgentStatusOverview } from "./AgentStatusOverview";
 import { McpManager } from "./McpManager";
-import { OrchestratorControls } from "./OrchestratorControls";
 import { ProjectSelector } from "./ProjectSelector";
 import { SessionConfig } from "./SessionConfig";
 import { SkillsBrowser } from "./SkillsBrowser";
@@ -19,9 +18,6 @@ type SidebarProps = {
   recentProjects: RecentProject[];
   onOpenFolder: () => void;
   onSelectProject: (projectPath: string) => void;
-
-  orchestrationMode: OrchestrationMode;
-  onChangeOrchestrationMode: (mode: OrchestrationMode) => void;
 
   sessions: SessionInfo[];
   selectedSessionId: SessionId | null;
@@ -40,8 +36,6 @@ export function Sidebar(props: SidebarProps) {
     recentProjects,
     onOpenFolder,
     onSelectProject,
-    orchestrationMode,
-    onChangeOrchestrationMode,
     sessions,
     selectedSessionId,
     onSelectSession,
@@ -97,15 +91,6 @@ export function Sidebar(props: SidebarProps) {
                   onOpenFolder={onOpenFolder}
                   onSelectProject={onSelectProject}
                 />
-              </div>
-            </section>
-
-            <div className="my-4 h-px bg-border/80" />
-
-            <section>
-              <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">ORCHESTRATOR</div>
-              <div className="mt-2">
-                <OrchestratorControls value={orchestrationMode} onChange={onChangeOrchestrationMode} />
               </div>
             </section>
 
