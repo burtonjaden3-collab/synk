@@ -103,7 +103,7 @@ impl Default for AiProvidersDisk {
                 api_key: None,
                 oauth_connected: false,
                 oauth_email: None,
-                default_model: "claude-sonnet-4-5-20250929".to_string(),
+                default_model: "claude-opus-4-6".to_string(),
             },
             google: ProviderAuthDisk {
                 auth_mode: Some(AuthModeDisk::ApiKey),
@@ -296,7 +296,7 @@ pub struct SettingsDisk {
 impl Default for SettingsDisk {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             ai_providers: AiProvidersDisk::default(),
             performance: PerformanceDisk::default(),
             keyboard: KeyboardDisk::default(),
@@ -678,6 +678,17 @@ pub fn settings_get(app: &tauri::AppHandle) -> Result<SettingsView> {
         disk.version = 2;
         changed = true;
     }
+    if disk.version < 3 {
+        // Claude Code defaults changed: prefer Opus 4.6+ over the older Sonnet default.
+        if disk.ai_providers.anthropic.default_model.trim().is_empty()
+            || disk.ai_providers.anthropic.default_model == "claude-sonnet-4-5-20250929"
+        {
+            disk.ai_providers.anthropic.default_model = "claude-opus-4-6".to_string();
+            changed = true;
+        }
+        disk.version = 3;
+        changed = true;
+    }
 
     if changed {
         // Best-effort persist so next launch sees the migrated defaults.
@@ -702,10 +713,10 @@ pub fn settings_set(app: &tauri::AppHandle, view: SettingsView) -> Result<Settin
     // Normalize via disk schema so missing fields get defaults.
     let mut disk = SettingsDisk::from(view);
     if disk.version == 0 {
-        disk.version = 2;
+        disk.version = 3;
     }
-    if disk.version < 2 {
-        disk.version = 2;
+    if disk.version < 3 {
+        disk.version = 3;
     }
 
     let text = serde_json::to_string_pretty(&disk).context("serialize settings.json")?;

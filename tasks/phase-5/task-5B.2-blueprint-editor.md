@@ -4,6 +4,16 @@
 ## What to Build
 Mermaid diagram rendering, code editor, and live preview. All 5 diagram types generated from AI conversation. User can edit diagrams manually.
 
+## Changed from Original Spec
+- **`mermaid` npm dependency required**: Must add `mermaid` to package.json before implementation. It is NOT currently installed.
+- **Blueprint persistence commands needed**: Need Tauri commands for reading/writing `.synk/blueprint.json`. These don't exist yet and must be added to `commands/persistence.rs`.
+- **Orchestrator references removed**: Node status bindings reference the simple task system (Task 5B.3) instead of orchestrator events.
+
+## Prerequisites
+Before starting implementation:
+1. Run `npm install mermaid` to add Mermaid.js to the project
+2. The `.synk/blueprint.json` persistence needs to be wired through Tauri commands
+
 ## 5 Diagram Types
 1. System Architecture (flowchart TD) — components and data flow
 2. File Structure (graph TD) — directory tree
@@ -11,31 +21,16 @@ Mermaid diagram rendering, code editor, and live preview. All 5 diagram types ge
 4. API Routes (flowchart LR) — endpoints and methods
 5. Deployment (flowchart TD) — infrastructure layout
 
-## Deliverables
-1. `BlueprintViewer.tsx` — tabbed view of all 5 diagram types, rendered with Mermaid.js
-2. `BlueprintEditor.tsx` — split view: Mermaid code editor (left) + live preview (right)
-3. `mermaid-utils.ts` — Mermaid validation, error extraction, rendering helpers
-4. AI generates diagrams → display immediately → user can edit
-5. Save diagrams to `.synk/blueprint.json`
-6. Validation: if Mermaid syntax invalid → show error, don't crash
+## Blueprint Generation Flow
+1. User clicks "Generate Blueprint" in the brainstorm wizard (from Task 5B.1)
+2. Frontend sends 5 **sequential** AI requests (one per diagram type) using `ai_chat_complete`
+3. Each request includes the `ProjectBlueprint` JSON + a diagram-specific system prompt
+4. Each response is validated with `mermaid.parse()`
+5. If invalid: retry up to 3 times with the error message appended
+6. If still invalid after 3 retries: show raw source in editor for manual fixing
+7. All 5 diagrams saved to `.synk/blueprint.json`
 
-## Files to Create/Modify
-```
-src/components/wizard/BlueprintViewer.tsx (new)
-src/components/wizard/BlueprintEditor.tsx (new)
-src/lib/mermaid-utils.ts                 (new)
-```
-
-## Acceptance Test
-Generate blueprints from brainstorm → all 5 diagrams render. Switch tabs between diagram types. Edit Mermaid code → live preview updates. Invalid syntax → error shown, not crash. Save → .synk/blueprint.json written.
-
----
-## SPEC REFERENCE (Read all of this carefully)
-## 19. Mermaid Blueprint Generation — Prompt Templates
-
-### 19.1 The Five Diagram Types
-
-Each diagram type has a dedicated prompt template. The AI receives the full `ProjectBlueprint` JSON as context along with the template.
+## Diagram Prompt Templates
 
 **Template 1: System Architecture**
 ```
@@ -44,19 +39,13 @@ Generate a Mermaid flowchart showing the system architecture.
 REQUIREMENTS:
 - Use `flowchart TD` (top-down layout)
 - Group related components with `subgraph` blocks
-  (e.g., "Frontend", "Backend", "Data Layer", "External Services")
 - Show data flow direction with labeled arrows
 - Include: UI components, API layer, business logic, databases,
   caches, message queues, external APIs, auth services
-- Use icons in node labels where helpful: 🖥️ 🔌 🗄️ 💾 🔐
-
-STYLE RULES:
 - Node IDs: lowercase-kebab (e.g., auth-service)
-- Node labels: Title Case with brief description
-- Arrow labels: verb phrase (e.g., "queries", "authenticates via")
 - Max 20 nodes (combine minor components)
 
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
+RESPOND WITH ONLY VALID MERMAID SYNTAX. No markdown fences, no explanation.
 ```
 
 **Template 2: File/Folder Structure**
@@ -66,15 +55,10 @@ Generate a Mermaid graph showing the project directory structure as a tree.
 REQUIREMENTS:
 - Use `graph TD` layout
 - Root node = project name
-- Show directories as rounded rectangles, files as plain rectangles
-- Include: src/, config files, package manifests, test directories,
-  public/static assets, CI/CD files
-- Annotate key files with their purpose in parentheses
-  e.g., "main.rs (entry point)"
 - Depth: max 3 levels deep. Group deeper content as "..."
-- Style directories differently: use `:::dir` class
+- Annotate key files with their purpose in parentheses
 
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
+RESPOND WITH ONLY VALID MERMAID SYNTAX. No markdown fences, no explanation.
 ```
 
 **Template 3: Database Schema (ER Diagram)**
@@ -83,15 +67,10 @@ Generate a Mermaid ER diagram showing the database schema.
 
 REQUIREMENTS:
 - Use `erDiagram` syntax
-- Include all entities identified in the project spec
-- Show relationships with proper cardinality:
-  ||--o{ (one to many), ||--|| (one to one), }o--o{ (many to many)
-- Each entity must include: primary key, foreign keys, and 3-7
-  most important fields with data types
-- Use standard types: string, int, uuid, datetime, boolean, text, float
-- Add relationship labels (e.g., "places", "belongs to", "has many")
+- Show relationships with proper cardinality
+- Each entity: primary key, foreign keys, 3-7 important fields with types
 
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
+RESPOND WITH ONLY VALID MERMAID SYNTAX. No markdown fences, no explanation.
 ```
 
 **Template 4: API Routes**
@@ -101,18 +80,9 @@ Generate a Mermaid flowchart showing the API route structure.
 REQUIREMENTS:
 - Use `flowchart LR` (left-to-right layout)
 - Group routes by resource with `subgraph` blocks
-  (e.g., "/auth", "/users", "/products")
 - Each node = one endpoint: "METHOD /path"
-  e.g., "POST /auth/login"
-- Color-code by HTTP method:
-  - GET: green (:::get)
-  - POST: blue (:::post)
-  - PUT/PATCH: orange (:::put)
-  - DELETE: red (:::delete)
-- Show middleware/auth requirements as diamond decision nodes
-- Include request/response summary on hover (title attribute)
 
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
+RESPOND WITH ONLY VALID MERMAID SYNTAX. No markdown fences, no explanation.
 ```
 
 **Template 5: Deployment Architecture**
@@ -122,178 +92,79 @@ Generate a Mermaid flowchart showing the deployment and infrastructure.
 REQUIREMENTS:
 - Use `flowchart TD` layout
 - Show: developer machine, CI/CD pipeline, staging, production
-- Include: version control (GitHub/GitLab), build steps, testing,
-  container registry, hosting platform, CDN, DNS, monitoring
-- Show deployment flow with numbered arrows (1. push, 2. build, etc.)
-- Include environment variables / secrets management
-- Show scaling strategy if applicable (load balancer, replicas)
+- Show deployment flow with numbered arrows
 
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
+RESPOND WITH ONLY VALID MERMAID SYNTAX. No markdown fences, no explanation.
 ```
 
-### 19.2 Validation & Error Recovery
-
-After receiving Mermaid source from the AI:
+## Validation & Error Recovery
 1. **Syntax validation**: Run through `mermaid.parse()` on the frontend
-2. **If invalid**: Send back to AI with the error message: `"The Mermaid syntax had an error: {error}. Fix it and return the corrected version."`
-3. **Max 3 retry attempts** before showing the raw source in the editor for manual fixing
-4. **Fallback**: If AI consistently fails on a diagram type, show a template skeleton the user can fill in manually
+2. **If invalid**: Send back to AI: `"The Mermaid syntax had an error: {error}. Fix it and return the corrected version."`
+3. **Max 3 retry attempts** before showing raw source in editor for manual fixing
+4. **Fallback**: Show a template skeleton the user can fill in manually
 
-### 19.3 Live Node Status Updates (Existing Projects)
+## Blueprint Persistence
 
-Once a project is active in the workspace, the Mermaid planner becomes a **live dashboard**. Each node in the architecture diagram can be linked to a task:
-
-```typescript
-interface MermaidNodeBinding {
-  nodeId: string;          // "auth-service" from the diagram
-  taskId: string | null;   // linked task in the task queue
-  status: 'not_started' | 'in_progress' | 'done' | 'failed';
+### `.synk/blueprint.json` Schema
+```json
+{
+  "version": 1,
+  "name": "project-name",
+  "description": "one-line description",
+  "techStack": ["react", "node", "postgres"],
+  "features": [{"name": "Auth", "description": "..."}],
+  "entities": [{"name": "User", "fields": ["id", "email"]}],
+  "diagrams": {
+    "architecture": "flowchart TD\n...",
+    "fileStructure": "graph TD\n...",
+    "database": "erDiagram\n...",
+    "apiRoutes": "flowchart LR\n...",
+    "deployment": "flowchart TD\n..."
+  },
+  "bindings": []
 }
 ```
 
-The floating Mermaid panel applies CSS classes to nodes based on status:
-- `not_started`: default styling (gray border)
-- `in_progress`: pulsing blue border + 🔵 badge
-- `done`: green border + ✅ badge
-- `failed`: red border + ❌ badge
+### Tauri Commands Needed
+```typescript
+// Save blueprint to .synk/blueprint.json
+invoke('blueprint_save', {
+  args: { projectPath: string, blueprint: BlueprintJson }
+}) -> { success: boolean }
 
-Binding is manual: user right-clicks a node → "Link to task" → picks from task queue. This keeps it simple and avoids brittle auto-matching.
-
-### 19.4 Blueprint as Agent Context (Critical Requirement)
-
-When an agent is dispatched to a task, Synk **always injects the relevant Mermaid blueprint** into the agent's context so the agent understands where its work fits in the bigger picture. This happens automatically — the user doesn't need to do anything.
-
-**Injection methods (by agent type):**
-
-| Agent | How Blueprint is Provided |
-|-------|--------------------------|
-| Claude Code | Written into the project's `CLAUDE.md` file under a `## Project Blueprint` section. Claude Code reads this automatically. |
-| Gemini CLI | Prepended to the task prompt as a context block. |
-| Codex | Included in the system prompt or project context file. |
-| Plain Terminal | Not applicable (no AI to consume it). |
-
-**What's included in CLAUDE.md (always present):**
-- The system architecture diagram ONLY (gives the big picture without bloating the file)
-
-**What's injected per-task via prompt (not in CLAUDE.md):**
-- The specific diagram layer most relevant to the task (e.g., database schema if the task is "build the user model")
-- A note highlighting which node(s) in the architecture diagram this task corresponds to
-- Current status of related nodes (so the agent knows what's already done vs. pending)
-
-This split keeps CLAUDE.md under 200 lines while still giving each agent targeted context for its specific task.
-
-**When blueprints update:** If the user edits a diagram while agents are working, Synk updates the `CLAUDE.md` / context file. Agents pick up changes on their next prompt cycle.
-
-This ensures every agent works with architectural awareness, not in isolation. The blueprint is the single source of truth for how the project fits together.
-
----
-
-
-## 14. File Structure
-
-```
-project-root/
-├── src-tauri/
-│   ├── src/
-│   │   ├── main.rs                    # Tauri entry point
-│   │   ├── lib.rs                     # Module declarations
-│   │   ├── commands/
-│   │   │   ├── session.rs             # Session CRUD
-│   │   │   ├── git.rs                 # Git/worktree operations
-│   │   │   ├── orchestrator.rs        # Orchestrator adapter commands
-│   │   │   ├── review.rs              # Diff/merge/review
-│   │   │   ├── skills.rs              # Skills discovery/toggle
-│   │   │   ├── mcp.rs                 # MCP server management
-│   │   │   ├── ai_provider.rs         # AI provider routing
-│   │   │   └── persistence.rs         # Save/restore state
-│   │   ├── core/
-│   │   │   ├── process_pool.rs        # Pre-warmed PTY pool
-│   │   │   ├── session_manager.rs     # Session lifecycle
-│   │   │   ├── git_manager.rs         # Worktree & merge ops
-│   │   │   ├── cost_tracker.rs        # Token/cost parsing
-│   │   │   ├── mcp_server.rs          # Built-in MCP status server
-│   │   │   ├── skills_discovery.rs    # Auto-detect skills
-│   │   │   ├── mcp_discovery.rs       # Auto-detect MCP servers
-│   │   │   └── persistence.rs         # Session state storage
-│   │   ├── orchestrator/
-│   │   │   ├── mod.rs                 # Orchestrator trait/interface
-│   │   │   ├── gastown/
-│   │   │   │   ├── mod.rs             # Gastown adapter entry
-│   │   │   │   ├── cli.rs             # gt/bd CLI executor & output parser
-│   │   │   │   ├── file_watcher.rs    # inotify watcher on ~/gt/
-│   │   │   │   ├── reconciler.rs      # State reconciler (files → Synk state)
-│   │   │   │   ├── setup_wizard.rs    # First-time setup flow
-│   │   │   │   └── types.rs           # Gastown data types (Bead, Convoy, Polecat, etc.)
-│   │   │   ├── agent_teams.rs         # Claude Agent Teams adapter
-│   │   │   └── manual.rs              # Manual/no orchestrator
-│   │   ├── ai/
-│   │   │   ├── mod.rs                 # AI provider trait
-│   │   │   ├── anthropic.rs           # Claude API
-│   │   │   ├── google.rs              # Gemini API
-│   │   │   ├── openai.rs              # OpenAI API
-│   │   │   └── ollama.rs              # Local Ollama
-│   │   └── events.rs                  # Tauri event definitions
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-├── src/
-│   ├── App.tsx                        # Root component + routing
-│   ├── components/
-│   │   ├── home/
-│   │   │   ├── HomeScreen.tsx         # Welcome + recent projects
-│   │   │   └── DashboardStats.tsx     # Aggregate stats
-│   │   ├── wizard/
-│   │   │   ├── BrainstormWizard.tsx   # Full-screen wizard container
-│   │   │   ├── ChatBrainstorm.tsx     # Conversational AI chat
-│   │   │   ├── BlueprintViewer.tsx    # Mermaid diagram display
-│   │   │   ├── BlueprintEditor.tsx    # Manual Mermaid editing
-│   │   │   ├── ExportPanel.tsx        # Export options
-│   │   │   └── StructuredExtract.tsx  # Real-time data extraction display
-│   │   ├── workspace/
-│   │   │   ├── Workspace.tsx          # Main workspace layout
-│   │   │   ├── SessionGrid.tsx        # Terminal grid
-│   │   │   ├── SessionPane.tsx        # Individual terminal pane
-│   │   │   └── CommandBar.tsx         # Central command dispatch
-│   │   ├── sidebar/
-│   │   │   ├── Sidebar.tsx            # Sidebar container
-│   │   │   ├── ProjectSelector.tsx    # Project switching
-│   │   │   ├── SkillsBrowser.tsx      # Skills toggle list
-│   │   │   ├── McpManager.tsx         # MCP server toggles
-│   │   │   ├── SessionConfig.tsx      # Per-session settings
-│   │   │   ├── OrchestratorControls.tsx # Mode selector + controls
-│   │   │   └── AgentStatusOverview.tsx  # Compact status cards
-│   │   ├── gastown/
-│   │   │   ├── GastownSetupWizard.tsx # First-time setup flow
-│   │   │   └── GastownDiagnostics.tsx # gt doctor / health panel
-│   │   ├── drawer/
-│   │   │   ├── BottomDrawer.tsx       # Drawer container (draggable panels)
-│   │   │   ├── CostTracker.tsx        # Token/cost display
-│   │   │   ├── GitActivityFeed.tsx    # Real-time git events
-│   │   │   ├── TaskQueue.tsx          # Task board (kanban/list)
-│   │   │   └── ReviewQueue.tsx        # PR-style review list
-│   │   ├── review/
-│   │   │   ├── ReviewPanel.tsx        # Full review experience
-│   │   │   ├── DiffViewer.tsx         # Side-by-side diff
-│   │   │   └── CommentThread.tsx      # Line-level comments
-│   │   ├── planner/
-│   │   │   └── MermaidFloatingPanel.tsx # Floating project planner
-│   │   └── shared/
-│   │       ├── KeyboardOverlay.tsx    # Shortcut help
-│   │       └── Settings.tsx           # App settings
-│   ├── lib/
-│   │   ├── store.ts                   # Zustand state store
-│   │   ├── tauri-api.ts               # Tauri invoke wrappers
-│   │   ├── keybindings.ts             # Vim-style key handler
-│   │   ├── cost-calculator.ts         # Token cost logic
-│   │   ├── mermaid-utils.ts           # Mermaid generation helpers
-│   │   └── types.ts                   # TypeScript interfaces
-│   └── styles/
-│       └── globals.css                # Tailwind + CSS variables + theme
-├── package.json
-├── tsconfig.json
-├── tailwind.config.js
-└── PROJECT_SPEC.md
+// Load blueprint from .synk/blueprint.json
+invoke('blueprint_get', {
+  args: { projectPath: string }
+}) -> BlueprintJson | null
 ```
 
----
+These should be added to `commands/persistence.rs` (or a new `commands/blueprint.rs`).
 
+## Refinement Phase
+After initial generation, users can:
+1. **Edit manually**: Split view with Mermaid code editor (left) + live preview (right)
+2. **Chat refinement**: Ask AI to modify a specific diagram — current source included as context
+3. Each edit re-renders the preview in real-time
+4. Changes auto-save to `.synk/blueprint.json`
 
+## Deliverables
+1. `BlueprintViewer.tsx` — tabbed view of all 5 diagram types, rendered with Mermaid.js
+2. `BlueprintEditor.tsx` — split view: Mermaid code editor (left) + live preview (right)
+3. `mermaid-utils.ts` — Mermaid initialization, validation, error extraction, rendering helpers
+4. AI generates diagrams -> display immediately -> user can edit
+5. Save diagrams to `.synk/blueprint.json` via Tauri command
+6. Validation: if Mermaid syntax invalid -> show error, don't crash
+7. Blueprint persistence Tauri commands (`blueprint_save`, `blueprint_get`)
+
+## Files to Create/Modify
+```
+src/components/wizard/BlueprintViewer.tsx (populate — currently empty)
+src/components/wizard/BlueprintEditor.tsx (populate — currently empty)
+src/lib/mermaid-utils.ts                 (populate — currently empty)
+src-tauri/src/commands/persistence.rs    (add blueprint_save, blueprint_get commands)
+src-tauri/src/lib.rs                     (register blueprint commands)
+src/lib/tauri-api.ts                     (add blueprint wrappers)
+```
+
+## Acceptance Test
+Generate blueprints from brainstorm -> all 5 diagrams render correctly. Switch tabs between diagram types. Edit Mermaid code -> live preview updates instantly. Invalid syntax -> error message shown, app doesn't crash. Save -> `.synk/blueprint.json` written with all diagrams. Reload -> diagrams load from file.

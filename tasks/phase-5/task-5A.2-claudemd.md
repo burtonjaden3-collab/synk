@@ -4,6 +4,11 @@
 ## What to Build
 Generate and maintain the CLAUDE.md project context file that AI agents read automatically. Must stay concise — under 200 lines target, 300 max.
 
+## Changed from Original Spec
+- **Trigger simplification**: Removed orchestrator-dependent triggers ("Agent dispatched", "New task dispatched"). Updates now trigger from: blueprint changes, task status changes in `.synk/tasks.json`, and explicit user action (regenerate button or Tauri command).
+- **Task status section reads from `.synk/tasks.json`**: The simple task system (built in Task 5B.3) provides the task data. No orchestrator dependency.
+- **Per-task context injection deferred**: The original spec described injecting task-specific diagrams into agent prompts when dispatching. Since there's no automated dispatch in manual mode, this is deferred. Users can manually regenerate CLAUDE.md before starting agent sessions.
+
 ## Key Size Rules
 - Target: under 200 lines / ~4KB
 - Only include system architecture diagram (not all 5)
@@ -16,432 +21,103 @@ Generate and maintain the CLAUDE.md project context file that AI agents read aut
 `---` separates Synk-managed content (above) from user content (below). Synk NEVER overwrites below the separator. On first generation, if CLAUDE.md already exists, preserve everything below separator.
 
 ## Auto-Update Triggers
-| Trigger | What Updates |
-|---------|-------------|
-| Blueprint generated/edited | Architecture section |
-| Task completed and merged | In Progress → Completed |
-| New task dispatched | Added to In Progress |
-| Task added to queue | Added to Queued |
-| Agent dispatched | Full rewrite so agent has latest state |
 
-## Deliverables
-1. `claudemd_generator.rs` — generate(), update(), get_line_count()
-2. Template rendering with live task status
-3. Size enforcement: auto-trim when exceeding 300 lines
-4. Separator preservation: detect ---, keep everything below
-5. First-generation safety: handle existing CLAUDE.md gracefully
+| Trigger | What Updates | How It Fires |
+|---------|-------------|-------------|
+| Blueprint generated/edited | Architecture section | Frontend calls `claudemd_generate` after blueprint save |
+| Task status changed | Completed/In Progress/Queued lists | Frontend calls `claudemd_generate` after task CRUD |
+| User clicks "Regenerate CLAUDE.md" | Full rewrite with latest state | Explicit Tauri command from sidebar or export panel |
 
-## Files to Create/Modify
-```
-src-tauri/src/core/claudemd_generator.rs (new)
-```
+Note: There are no automatic background triggers. All updates are explicit — the frontend calls the backend command when state changes that should be reflected in CLAUDE.md.
 
-## Acceptance Test
-Generate CLAUDE.md → file under 200 lines. Add 20 completed tasks → only 5 shown + count. Edit manually below --- → regenerate → manual content preserved. Check: only 1 diagram included.
-
----
-## SPEC REFERENCE (Read all of this carefully)
-## 30. CLAUDE.md Generation
-
-### 30.1 What is CLAUDE.md?
-
-`CLAUDE.md` is a project context file that Claude Code reads automatically when it starts a session. It tells the AI agent everything it needs to know about the project — architecture, conventions, what's been done, what's in progress. Synk generates and maintains this file.
-
-### 30.2 Generated File Structure
+## Generated File Structure
 
 ```markdown
 # Project: {project_name}
 
 ## Overview
-{project description from brainstorm wizard or user-provided}
+{2-line project description from blueprint or .synk/config.json}
 
 ## Tech Stack
-{tech stack list from blueprint or config}
+{bullet list of tech names only}
 
 ## Project Blueprint
 
 ### System Architecture
-```mermaid
-{architecture diagram mermaid source}
-```
-
-### File Structure
-```mermaid
-{file structure diagram mermaid source}
-```
-
-### Database Schema
-```mermaid
-{ER diagram mermaid source}
-```
-
-### API Routes
-```mermaid
-{API routes diagram mermaid source}
-```
-
-### Deployment
-```mermaid
-{deployment diagram mermaid source}
-```
+` ``mermaid
+{architecture diagram from .synk/blueprint.json — ONLY this one diagram}
+` ``
 
 ## Current Status
 
 ### Completed
-- ✅ {task title} ({branch name}, merged)
-- ✅ {task title} ({branch name}, merged)
+- [x] {task title} ({branch name})
+...and N more completed tasks
 
 ### In Progress
-- 🔵 {task title} — being worked on by {agent type} on branch `{branch}`
-- 🔵 {task title} — being worked on by {agent type} on branch `{branch}`
+- [ ] {task title} — on branch `{branch}`
 
 ### Queued
-- ⬜ {task title}
-- ⬜ {task title}
+- [ ] {task title}
+...and N more queued
 
 ## Conventions
-- Branch naming: `feat/{task-slug}`, `fix/{task-slug}`
-- Commit style: conventional commits (feat:, fix:, chore:, etc.)
-- Test files: colocated with source in `__tests__/` directories
-- {any user-added conventions from .synk/config.json}
+- {max 5 convention bullets from .synk/config.json}
 
 ## Important Notes
-- This file is auto-generated by Synk. Manual edits to the sections above
-  will be overwritten. Add custom notes below the line.
+- This file is auto-generated by Synk. Manual edits above will be overwritten.
 
 ---
 
-{user's custom notes preserved here — Synk never overwrites below this line}
+{user's custom notes — never overwritten}
 ```
 
-### 30.3 Size Constraints (Critical)
+## Data Sources
+- **Project name/description/tech stack**: Read from `.synk/blueprint.json` (populated by brainstorm wizard)
+- **Architecture diagram**: Read from `.synk/blueprint.json` `diagrams.architecture` field
+- **Task lists**: Read from `.synk/tasks.json` (simple task system from Task 5B.3)
+- **Conventions**: Read from `.synk/config.json` `conventions` array (optional, user-configured)
+- **User notes below separator**: Read from existing `CLAUDE.md` on disk
 
-CLAUDE.md must stay concise to preserve agent context window for actual work. A bloated context file makes agents slower and less effective.
-
-**Hard limits:**
-- **Target size: under 200 lines / ~4KB**
-- **Absolute max: 300 lines** — if file exceeds this, Synk auto-trims (see trimming rules below)
-
-**Conciseness rules:**
-
-| Section | Rule |
-|---------|------|
-| Overview | Max 2 sentences |
-| Tech Stack | Bullet list, no descriptions — just names |
-| Blueprint diagrams | Include ONLY the system architecture diagram (the most useful one). Other 4 diagrams stored in `.synk/blueprint.json` only — agents can request them if needed. |
-| Current Status | Max 5 completed tasks shown (most recent). Older ones just show a count: "...and 12 more completed tasks" |
-| In Progress | All shown (these are actively relevant) |
-| Queued | Max 5 shown. Rest summarized: "...and 8 more queued" |
-| Conventions | Max 5 bullet points |
-
-**Trimming priority (when file exceeds 300 lines):**
+## Trimming Priority (when exceeding 300 lines)
 1. First: reduce Completed list to 3 items + count
-2. Then: reduce Queued list to 3 items + count  
+2. Then: reduce Queued list to 3 items + count
 3. Then: simplify architecture diagram (remove subgraph details)
 4. Never trim: In Progress items, Conventions, user notes below separator
 
-**Why only one diagram:** The system architecture diagram gives agents 80% of the context value. Including all 5 diagrams would easily push CLAUDE.md past 500 lines. The other diagrams are available on demand — an agent can read `.synk/blueprint.json` if it needs the DB schema or API routes for a specific task.
-
-**Per-task context injection:** When dispatching a task, Synk appends a small task-specific block to the agent's prompt (NOT to CLAUDE.md) with the relevant diagram for that task:
-
-```
-Your current task: "Build user authentication"
-Relevant schema for this task:
-```mermaid
-{ER diagram — only the relevant entities}
-`` `
-```
-
-This keeps CLAUDE.md lean while still giving each agent the specific context it needs.
-
-### 30.4 When CLAUDE.md Updates
-
-| Trigger | What Updates |
-|---------|-------------|
-| Blueprint generated/edited | Architecture, file structure, DB, API, deployment sections |
-| Task completed and merged | Moves from "In Progress" → "Completed" |
-| New task dispatched | Added to "In Progress" with agent and branch info |
-| Task added to queue | Added to "Queued" |
-| User edits conventions | Conventions section updates |
-| Agent dispatched to new session | Fresh CLAUDE.md write so agent has latest state |
-
-### 30.5 The Separator Line
-
-The `---` line near the bottom is critical. Everything above it is auto-managed by Synk. Everything below it is user-owned and never touched. This lets users add custom notes, coding standards, or context without worrying about Synk overwriting it.
-
-**On first generation:** Synk checks if `CLAUDE.md` already exists. If it does:
-1. Read the existing file
-2. Look for the `---` separator
+## First-Generation Safety
+1. Check if `CLAUDE.md` already exists at project root
+2. If yes: look for `---` separator line
 3. Preserve everything below the separator
 4. Replace everything above with Synk's generated content
-5. If no separator exists, append Synk's content above a new separator and move existing content below it
+5. If no separator exists: move entire existing content below a new separator
 
----
+## Deliverables
+1. `src-tauri/src/core/claudemd_generator.rs` — `generate()`, `get_line_count()`
+2. `src-tauri/src/commands/claudemd.rs` — Tauri command `claudemd_generate`
+3. Template rendering that reads from `.synk/blueprint.json` and `.synk/tasks.json`
+4. Size enforcement: auto-trim when exceeding 300 lines
+5. Separator preservation: detect `---`, keep everything below
+6. First-generation safety: handle existing CLAUDE.md gracefully
 
-
-## 19. Mermaid Blueprint Generation — Prompt Templates
-
-### 19.1 The Five Diagram Types
-
-Each diagram type has a dedicated prompt template. The AI receives the full `ProjectBlueprint` JSON as context along with the template.
-
-**Template 1: System Architecture**
+## Files to Create/Modify
 ```
-Generate a Mermaid flowchart showing the system architecture.
-
-REQUIREMENTS:
-- Use `flowchart TD` (top-down layout)
-- Group related components with `subgraph` blocks
-  (e.g., "Frontend", "Backend", "Data Layer", "External Services")
-- Show data flow direction with labeled arrows
-- Include: UI components, API layer, business logic, databases,
-  caches, message queues, external APIs, auth services
-- Use icons in node labels where helpful: 🖥️ 🔌 🗄️ 💾 🔐
-
-STYLE RULES:
-- Node IDs: lowercase-kebab (e.g., auth-service)
-- Node labels: Title Case with brief description
-- Arrow labels: verb phrase (e.g., "queries", "authenticates via")
-- Max 20 nodes (combine minor components)
-
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
+src-tauri/src/core/claudemd_generator.rs  (new)
+src-tauri/src/commands/claudemd.rs        (new)
+src-tauri/src/commands/mod.rs             (add pub mod claudemd)
+src-tauri/src/lib.rs                      (register claudemd_generate command)
+src/lib/tauri-api.ts                      (add claudemdGenerate wrapper)
 ```
 
-**Template 2: File/Folder Structure**
-```
-Generate a Mermaid graph showing the project directory structure as a tree.
-
-REQUIREMENTS:
-- Use `graph TD` layout
-- Root node = project name
-- Show directories as rounded rectangles, files as plain rectangles
-- Include: src/, config files, package manifests, test directories,
-  public/static assets, CI/CD files
-- Annotate key files with their purpose in parentheses
-  e.g., "main.rs (entry point)"
-- Depth: max 3 levels deep. Group deeper content as "..."
-- Style directories differently: use `:::dir` class
-
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
-```
-
-**Template 3: Database Schema (ER Diagram)**
-```
-Generate a Mermaid ER diagram showing the database schema.
-
-REQUIREMENTS:
-- Use `erDiagram` syntax
-- Include all entities identified in the project spec
-- Show relationships with proper cardinality:
-  ||--o{ (one to many), ||--|| (one to one), }o--o{ (many to many)
-- Each entity must include: primary key, foreign keys, and 3-7
-  most important fields with data types
-- Use standard types: string, int, uuid, datetime, boolean, text, float
-- Add relationship labels (e.g., "places", "belongs to", "has many")
-
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
-```
-
-**Template 4: API Routes**
-```
-Generate a Mermaid flowchart showing the API route structure.
-
-REQUIREMENTS:
-- Use `flowchart LR` (left-to-right layout)
-- Group routes by resource with `subgraph` blocks
-  (e.g., "/auth", "/users", "/products")
-- Each node = one endpoint: "METHOD /path"
-  e.g., "POST /auth/login"
-- Color-code by HTTP method:
-  - GET: green (:::get)
-  - POST: blue (:::post)
-  - PUT/PATCH: orange (:::put)
-  - DELETE: red (:::delete)
-- Show middleware/auth requirements as diamond decision nodes
-- Include request/response summary on hover (title attribute)
-
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
-```
-
-**Template 5: Deployment Architecture**
-```
-Generate a Mermaid flowchart showing the deployment and infrastructure.
-
-REQUIREMENTS:
-- Use `flowchart TD` layout
-- Show: developer machine, CI/CD pipeline, staging, production
-- Include: version control (GitHub/GitLab), build steps, testing,
-  container registry, hosting platform, CDN, DNS, monitoring
-- Show deployment flow with numbered arrows (1. push, 2. build, etc.)
-- Include environment variables / secrets management
-- Show scaling strategy if applicable (load balancer, replicas)
-
-RESPOND WITH ONLY VALID MERMAID SYNTAX.
-```
-
-### 19.2 Validation & Error Recovery
-
-After receiving Mermaid source from the AI:
-1. **Syntax validation**: Run through `mermaid.parse()` on the frontend
-2. **If invalid**: Send back to AI with the error message: `"The Mermaid syntax had an error: {error}. Fix it and return the corrected version."`
-3. **Max 3 retry attempts** before showing the raw source in the editor for manual fixing
-4. **Fallback**: If AI consistently fails on a diagram type, show a template skeleton the user can fill in manually
-
-### 19.3 Live Node Status Updates (Existing Projects)
-
-Once a project is active in the workspace, the Mermaid planner becomes a **live dashboard**. Each node in the architecture diagram can be linked to a task:
+## Tauri Command
 
 ```typescript
-interface MermaidNodeBinding {
-  nodeId: string;          // "auth-service" from the diagram
-  taskId: string | null;   // linked task in the task queue
-  status: 'not_started' | 'in_progress' | 'done' | 'failed';
-}
+// Generate/regenerate CLAUDE.md for the given project.
+// Reads blueprint + tasks from .synk/, writes CLAUDE.md to project root.
+invoke('claudemd_generate', {
+  args: { projectPath: string }
+}) -> { path: string, lineCount: number }
 ```
 
-The floating Mermaid panel applies CSS classes to nodes based on status:
-- `not_started`: default styling (gray border)
-- `in_progress`: pulsing blue border + 🔵 badge
-- `done`: green border + ✅ badge
-- `failed`: red border + ❌ badge
-
-Binding is manual: user right-clicks a node → "Link to task" → picks from task queue. This keeps it simple and avoids brittle auto-matching.
-
-### 19.4 Blueprint as Agent Context (Critical Requirement)
-
-When an agent is dispatched to a task, Synk **always injects the relevant Mermaid blueprint** into the agent's context so the agent understands where its work fits in the bigger picture. This happens automatically — the user doesn't need to do anything.
-
-**Injection methods (by agent type):**
-
-| Agent | How Blueprint is Provided |
-|-------|--------------------------|
-| Claude Code | Written into the project's `CLAUDE.md` file under a `## Project Blueprint` section. Claude Code reads this automatically. |
-| Gemini CLI | Prepended to the task prompt as a context block. |
-| Codex | Included in the system prompt or project context file. |
-| Plain Terminal | Not applicable (no AI to consume it). |
-
-**What's included in CLAUDE.md (always present):**
-- The system architecture diagram ONLY (gives the big picture without bloating the file)
-
-**What's injected per-task via prompt (not in CLAUDE.md):**
-- The specific diagram layer most relevant to the task (e.g., database schema if the task is "build the user model")
-- A note highlighting which node(s) in the architecture diagram this task corresponds to
-- Current status of related nodes (so the agent knows what's already done vs. pending)
-
-This split keeps CLAUDE.md under 200 lines while still giving each agent targeted context for its specific task.
-
-**When blueprints update:** If the user edits a diagram while agents are working, Synk updates the `CLAUDE.md` / context file. Agents pick up changes on their next prompt cycle.
-
-This ensures every agent works with architectural awareness, not in isolation. The blueprint is the single source of truth for how the project fits together.
-
----
-
-
-## 14. File Structure
-
-```
-project-root/
-├── src-tauri/
-│   ├── src/
-│   │   ├── main.rs                    # Tauri entry point
-│   │   ├── lib.rs                     # Module declarations
-│   │   ├── commands/
-│   │   │   ├── session.rs             # Session CRUD
-│   │   │   ├── git.rs                 # Git/worktree operations
-│   │   │   ├── orchestrator.rs        # Orchestrator adapter commands
-│   │   │   ├── review.rs              # Diff/merge/review
-│   │   │   ├── skills.rs              # Skills discovery/toggle
-│   │   │   ├── mcp.rs                 # MCP server management
-│   │   │   ├── ai_provider.rs         # AI provider routing
-│   │   │   └── persistence.rs         # Save/restore state
-│   │   ├── core/
-│   │   │   ├── process_pool.rs        # Pre-warmed PTY pool
-│   │   │   ├── session_manager.rs     # Session lifecycle
-│   │   │   ├── git_manager.rs         # Worktree & merge ops
-│   │   │   ├── cost_tracker.rs        # Token/cost parsing
-│   │   │   ├── mcp_server.rs          # Built-in MCP status server
-│   │   │   ├── skills_discovery.rs    # Auto-detect skills
-│   │   │   ├── mcp_discovery.rs       # Auto-detect MCP servers
-│   │   │   └── persistence.rs         # Session state storage
-│   │   ├── orchestrator/
-│   │   │   ├── mod.rs                 # Orchestrator trait/interface
-│   │   │   ├── gastown/
-│   │   │   │   ├── mod.rs             # Gastown adapter entry
-│   │   │   │   ├── cli.rs             # gt/bd CLI executor & output parser
-│   │   │   │   ├── file_watcher.rs    # inotify watcher on ~/gt/
-│   │   │   │   ├── reconciler.rs      # State reconciler (files → Synk state)
-│   │   │   │   ├── setup_wizard.rs    # First-time setup flow
-│   │   │   │   └── types.rs           # Gastown data types (Bead, Convoy, Polecat, etc.)
-│   │   │   ├── agent_teams.rs         # Claude Agent Teams adapter
-│   │   │   └── manual.rs              # Manual/no orchestrator
-│   │   ├── ai/
-│   │   │   ├── mod.rs                 # AI provider trait
-│   │   │   ├── anthropic.rs           # Claude API
-│   │   │   ├── google.rs              # Gemini API
-│   │   │   ├── openai.rs              # OpenAI API
-│   │   │   └── ollama.rs              # Local Ollama
-│   │   └── events.rs                  # Tauri event definitions
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-├── src/
-│   ├── App.tsx                        # Root component + routing
-│   ├── components/
-│   │   ├── home/
-│   │   │   ├── HomeScreen.tsx         # Welcome + recent projects
-│   │   │   └── DashboardStats.tsx     # Aggregate stats
-│   │   ├── wizard/
-│   │   │   ├── BrainstormWizard.tsx   # Full-screen wizard container
-│   │   │   ├── ChatBrainstorm.tsx     # Conversational AI chat
-│   │   │   ├── BlueprintViewer.tsx    # Mermaid diagram display
-│   │   │   ├── BlueprintEditor.tsx    # Manual Mermaid editing
-│   │   │   ├── ExportPanel.tsx        # Export options
-│   │   │   └── StructuredExtract.tsx  # Real-time data extraction display
-│   │   ├── workspace/
-│   │   │   ├── Workspace.tsx          # Main workspace layout
-│   │   │   ├── SessionGrid.tsx        # Terminal grid
-│   │   │   ├── SessionPane.tsx        # Individual terminal pane
-│   │   │   └── CommandBar.tsx         # Central command dispatch
-│   │   ├── sidebar/
-│   │   │   ├── Sidebar.tsx            # Sidebar container
-│   │   │   ├── ProjectSelector.tsx    # Project switching
-│   │   │   ├── SkillsBrowser.tsx      # Skills toggle list
-│   │   │   ├── McpManager.tsx         # MCP server toggles
-│   │   │   ├── SessionConfig.tsx      # Per-session settings
-│   │   │   ├── OrchestratorControls.tsx # Mode selector + controls
-│   │   │   └── AgentStatusOverview.tsx  # Compact status cards
-│   │   ├── gastown/
-│   │   │   ├── GastownSetupWizard.tsx # First-time setup flow
-│   │   │   └── GastownDiagnostics.tsx # gt doctor / health panel
-│   │   ├── drawer/
-│   │   │   ├── BottomDrawer.tsx       # Drawer container (draggable panels)
-│   │   │   ├── CostTracker.tsx        # Token/cost display
-│   │   │   ├── GitActivityFeed.tsx    # Real-time git events
-│   │   │   ├── TaskQueue.tsx          # Task board (kanban/list)
-│   │   │   └── ReviewQueue.tsx        # PR-style review list
-│   │   ├── review/
-│   │   │   ├── ReviewPanel.tsx        # Full review experience
-│   │   │   ├── DiffViewer.tsx         # Side-by-side diff
-│   │   │   └── CommentThread.tsx      # Line-level comments
-│   │   ├── planner/
-│   │   │   └── MermaidFloatingPanel.tsx # Floating project planner
-│   │   └── shared/
-│   │       ├── KeyboardOverlay.tsx    # Shortcut help
-│   │       └── Settings.tsx           # App settings
-│   ├── lib/
-│   │   ├── store.ts                   # Zustand state store
-│   │   ├── tauri-api.ts               # Tauri invoke wrappers
-│   │   ├── keybindings.ts             # Vim-style key handler
-│   │   ├── cost-calculator.ts         # Token cost logic
-│   │   ├── mermaid-utils.ts           # Mermaid generation helpers
-│   │   └── types.ts                   # TypeScript interfaces
-│   └── styles/
-│       └── globals.css                # Tailwind + CSS variables + theme
-├── package.json
-├── tsconfig.json
-├── tailwind.config.js
-└── PROJECT_SPEC.md
-```
-
----
-
-
+## Acceptance Test
+Generate CLAUDE.md -> file under 200 lines. Add 20 completed tasks to `.synk/tasks.json` -> only 5 shown + count. Edit manually below `---` -> regenerate -> manual content preserved. Check: only 1 diagram (architecture) included.

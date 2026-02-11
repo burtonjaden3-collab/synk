@@ -2,7 +2,7 @@ import type { AppSettings } from "./types";
 
 export function defaultAppSettings(): AppSettings {
   return {
-    version: 2,
+    version: 3,
     aiProviders: {
       default: "anthropic",
       anthropic: {
@@ -10,7 +10,7 @@ export function defaultAppSettings(): AppSettings {
         apiKey: null,
         oauthConnected: false,
         oauthEmail: null,
-        defaultModel: "claude-sonnet-4-5-20250929",
+        defaultModel: "claude-opus-4-6",
       },
       google: {
         authMode: "apiKey",
