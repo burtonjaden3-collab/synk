@@ -47,6 +47,22 @@ export interface SessionInfo {
   projectPath: string;
   branch?: string;
   workingDir?: string;
+  cost?: SessionCostSnapshot | null;
+}
+
+export type SessionCostSource = "mcp" | "output_parsed" | "heuristic";
+
+export interface SessionCostSnapshot {
+  inputTokens: number;
+  outputTokens: number;
+  totalCost: number;
+  model?: string | null;
+  source: SessionCostSource;
+}
+
+export interface SessionCostUpdatedEvent {
+  sessionId: SessionId;
+  cost: SessionCostSnapshot;
 }
 
 export interface SessionOutputEvent {

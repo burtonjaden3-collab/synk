@@ -39,7 +39,6 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [projectMode, setProjectMode] = useState<"existing" | "new">("existing");
   const [pickedPath, setPickedPath] = useState<string>("");
 
   const current = steps[step]!;
@@ -217,56 +216,21 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
                   </div>
                 </div>
 
-                <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-12">
-                  <div className="lg:col-span-6">
-                    <div className="rounded-2xl border border-border bg-bg-secondary p-4">
-                      <div className="text-sm font-semibold">Mode</div>
-                      <div className="mt-3 space-y-2">
-                        <label className="flex items-start gap-3 rounded-xl border border-border bg-bg-tertiary px-3 py-3">
-                          <input
-                            className="mt-1"
-                            type="radio"
-                            checked={projectMode === "new"}
-                            onChange={() => setProjectMode("new")}
-                          />
-                          <div className="min-w-0">
-                            <div className="text-xs font-semibold text-text-primary">Start a new project</div>
-                            <div className="mt-1 text-xs text-text-secondary">
-                              Brainstorm wizard ships later (disabled for now).
-                            </div>
-                          </div>
-                        </label>
-
-                        <label className="flex items-start gap-3 rounded-xl border border-accent-blue/35 bg-bg-tertiary px-3 py-3">
-                          <input
-                            className="mt-1"
-                            type="radio"
-                            checked={projectMode === "existing"}
-                            onChange={() => setProjectMode("existing")}
-                          />
-                          <div className="min-w-0">
-                            <div className="text-xs font-semibold text-text-primary">Open an existing folder</div>
-                            <div className="mt-1 text-xs text-text-secondary">Pick a directory to add to recent projects.</div>
-                          </div>
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="lg:col-span-6">
+                <div className="mt-5 grid grid-cols-1 gap-4">
+                  <div>
                     <div className="rounded-2xl border border-border bg-bg-secondary p-4">
                       <div className="text-sm font-semibold">Folder</div>
                       <div className="mt-3 flex items-center gap-2">
                         <input
                           className="h-10 w-full rounded-xl border border-border bg-bg-tertiary px-3 font-mono text-[12px] text-text-primary disabled:opacity-60"
                           value={pickedPath}
-                          placeholder={projectMode === "existing" ? "/path/to/your-project" : "brainstorm wizard coming soon"}
+                          placeholder="/path/to/your-project"
                           disabled
                           readOnly
                         />
                         <button
                           className="h-10 shrink-0 rounded-xl border border-border bg-bg-tertiary px-3 text-xs font-semibold text-text-primary hover:bg-bg-hover disabled:opacity-60"
-                          disabled={busy || projectMode !== "existing"}
+                          disabled={busy}
                           onClick={async () => {
                             setError(null);
                             try {
@@ -374,7 +338,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
             {current.id === "project" ? (
               <button
                 className="rounded-xl border border-accent-green/40 bg-accent-green/10 px-4 py-2 text-xs font-semibold text-accent-green hover:bg-accent-green/15 disabled:opacity-60"
-                disabled={busy || projectMode !== "existing" || !pickedPath.trim()}
+                disabled={busy || !pickedPath.trim()}
                 onClick={() => launch().catch(() => {})}
                 type="button"
               >

@@ -78,7 +78,7 @@ function App() {
         onFinished={() => {
           // Wizard completion creates the config dir; avoid re-showing without requiring a reload.
           setFirstRun(false);
-          // If the wizard didn't open a project (future new-project flow), fall back to home.
+          // If the wizard didn't open a project, fall back to home.
           if (!useAppStore.getState().currentProject) setCurrentProject(null);
         }}
       />

@@ -201,7 +201,7 @@ export function HomeScreen() {
                 <div>
                   <div className="text-sm font-semibold">Start</div>
                   <div className="mt-1 text-xs text-text-secondary">
-                    Create something new, or open an existing folder.
+                    Open an existing folder.
                   </div>
                 </div>
                 <div className="rounded-full border border-border bg-bg-primary px-2.5 py-1 font-mono text-[11px] text-text-secondary">
@@ -209,7 +209,7 @@ export function HomeScreen() {
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-3">
+              <div className="mt-4">
                 <button
                   className="group relative overflow-hidden rounded-2xl border border-accent-blue/35 bg-bg-tertiary p-4 text-left shadow-[0_18px_45px_rgba(88,166,255,0.10)] disabled:opacity-60"
                   disabled={!tauriAvailable || busy}

@@ -991,7 +991,6 @@ mod tests {
         assert!(!is_valid_env_var_name("A B"));
         assert!(!is_valid_env_var_name("A;rm -rf /"));
     }
-
     #[test]
     fn codex_command_defaults_to_workspace_write_without_model() {
         let cmd = agent_command_with_model(AgentType::Codex, "codex", None, false);
