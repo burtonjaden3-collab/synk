@@ -563,9 +563,192 @@ fn spawn_output_pump(
         let fd = handle.master_fd()?;
         let mut reader = handle.clone_reader()?;
 
+        // Minimal filter for terminal Device Status Report queries.
+        // Some TUIs (including Codex CLI via crossterm) query cursor position via
+        // `ESC [ 6 n` and expect a fast reply. In a webview terminal, the
+        // "terminal replies on stdin" roundtrip can be too slow; answering at the
+        // PTY layer avoids startup crashes.
+        struct DsrFilter {
+            pending: Vec<u8>,
+        }
+
+        impl DsrFilter {
+            fn new() -> Self {
+                Self { pending: Vec::new() }
+            }
+
+            fn flush_pending(&mut self, out: &mut Vec<u8>) {
+                if !self.pending.is_empty() {
+                    out.extend_from_slice(&self.pending);
+                    self.pending.clear();
+                }
+            }
+
+            fn respond(fd: i32, bytes: &[u8]) {
+                // Best-effort: this is small; if we can't write immediately we just drop.
+                let mut off = 0usize;
+                for _ in 0..3 {
+                    while off < bytes.len() {
+                        let rc = unsafe {
+                            libc::write(
+                                fd,
+                                bytes[off..].as_ptr() as *const _,
+                                bytes.len().saturating_sub(off),
+                            )
+                        };
+                        if rc > 0 {
+                            off += rc as usize;
+                            continue;
+                        }
+                        if rc == 0 {
+                            return;
+                        }
+                        let err = std::io::Error::last_os_error();
+                        match err.raw_os_error() {
+                            Some(libc::EINTR) => continue,
+                            Some(errno) if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK => {
+                                // Give the PTY a moment to become writable.
+                                let mut pfd = libc::pollfd {
+                                    fd,
+                                    events: libc::POLLOUT,
+                                    revents: 0,
+                                };
+                                let _ = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, 5) };
+                                break;
+                            }
+                            _ => return,
+                        }
+                    }
+                    if off >= bytes.len() {
+                        return;
+                    }
+                }
+            }
+
+            fn feed(&mut self, fd: i32, input: &[u8], out: &mut Vec<u8>) {
+                for &b in input {
+                    if self.pending.is_empty() {
+                        if b == 0x1b {
+                            self.pending.push(b);
+                            continue;
+                        }
+                        out.push(b);
+                        continue;
+                    }
+
+                    match self.pending.as_slice() {
+                        [0x1b] => {
+                            if b == b'[' {
+                                self.pending.push(b);
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        [0x1b, b'['] => {
+                            if b == b'?' || b == b'5' || b == b'6' {
+                                self.pending.push(b);
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        [0x1b, b'[', b'?'] => {
+                            if b == b'5' || b == b'6' {
+                                self.pending.push(b);
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        // ESC [ 6
+                        [0x1b, b'[', b'6'] => {
+                            if b == b'n' {
+                                Self::respond(fd, b"\x1b[1;1R");
+                                self.pending.clear();
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        // ESC [ 5
+                        [0x1b, b'[', b'5'] => {
+                            if b == b'n' {
+                                Self::respond(fd, b"\x1b[0n");
+                                self.pending.clear();
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        // ESC [ ? 6
+                        [0x1b, b'[', b'?', b'6'] => {
+                            if b == b'n' {
+                                // DECXCPR variant; reply with the private response form.
+                                Self::respond(fd, b"\x1b[?1;1R");
+                                self.pending.clear();
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        // ESC [ ? 5
+                        [0x1b, b'[', b'?', b'5'] => {
+                            if b == b'n' {
+                                // Best-effort: respond with "OK".
+                                Self::respond(fd, b"\x1b[0n");
+                                self.pending.clear();
+                            } else {
+                                self.flush_pending(out);
+                                if b == 0x1b {
+                                    self.pending.push(b);
+                                } else {
+                                    out.push(b);
+                                }
+                            }
+                        }
+                        _ => {
+                            // Unknown / too long; flush and restart.
+                            self.flush_pending(out);
+                            if b == 0x1b {
+                                self.pending.push(b);
+                            } else {
+                                out.push(b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let t = thread::spawn(move || {
             const SCROLLBACK_CAP_BYTES: usize = 512 * 1024;
             let mut buf = [0u8; 16 * 1024];
+            let mut dsr = DsrFilter::new();
 
             while !stop.load(Ordering::Relaxed) {
                 let mut pfd = libc::pollfd {
@@ -588,10 +771,16 @@ fn spawn_output_pump(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        let mut filtered: Vec<u8> = Vec::with_capacity(n);
+                        dsr.feed(fd, &buf[..n], &mut filtered);
+                        if filtered.is_empty() {
+                            continue;
+                        }
+
                         // Keep a bounded in-memory scrollback so the UI can restore content
                         // after React unmounts/remounts (e.g. Home -> Workspace navigation).
                         if let Ok(mut sb) = scrollback.lock() {
-                            for &b in &buf[..n] {
+                            for &b in &filtered {
                                 sb.push_back(b);
                             }
                             while sb.len() > SCROLLBACK_CAP_BYTES {
@@ -599,7 +788,7 @@ fn spawn_output_pump(
                             }
                         }
 
-                        let data_b64 = STANDARD.encode(&buf[..n]);
+                        let data_b64 = STANDARD.encode(&filtered);
                         let _ = app.emit(
                             "session:output",
                             SessionOutputEvent {
@@ -671,15 +860,17 @@ fn agent_command_with_model(
             format!("{base_cmd} --model '{m}'")
         }
         // Codex CLI supports config overrides via `-c key=value` (TOML parsed).
-        // We set both model and reasoning effort so sessions are consistent.
+        // We set sandbox/approval defaults so file writes inside the workspace do not
+        // trigger repeated permission prompts, plus reasoning/model consistency.
         // Example from codex help: `-c model="o3"`.
         AgentType::Codex | AgentType::Openrouter => {
-            let mut cmd = base_cmd.to_string();
+            let mut cmd = format!(
+                "{base_cmd} --sandbox workspace-write --ask-for-approval on-failure -c 'model_reasoning_effort=\"high\"'"
+            );
             if let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) {
                 let m = shell_single_quote_escape(model);
                 cmd.push_str(&format!(" -c 'model=\"{m}\"'"));
             }
-            cmd.push_str(" -c 'model_reasoning_effort=\"high\"'");
             if force_api_login {
                 cmd.push_str(" -c 'forced_login_method=\"api\"'");
             }
@@ -787,7 +978,7 @@ fn apply_codex_provider_env(
 
 #[cfg(test)]
 mod tests {
-    use super::is_valid_env_var_name;
+    use super::{agent_command_with_model, is_valid_env_var_name, AgentType};
 
     #[test]
     fn env_var_name_validation() {
@@ -799,5 +990,30 @@ mod tests {
         assert!(!is_valid_env_var_name("A-B"));
         assert!(!is_valid_env_var_name("A B"));
         assert!(!is_valid_env_var_name("A;rm -rf /"));
+    }
+
+    #[test]
+    fn codex_command_defaults_to_workspace_write_without_model() {
+        let cmd = agent_command_with_model(AgentType::Codex, "codex", None, false);
+        assert!(cmd.contains("--sandbox workspace-write"));
+        assert!(cmd.contains("--ask-for-approval on-failure"));
+        assert!(cmd.contains("-c 'model_reasoning_effort=\"high\"'"));
+    }
+
+    #[test]
+    fn codex_command_adds_model_override() {
+        let cmd = agent_command_with_model(
+            AgentType::Codex,
+            "codex",
+            Some("gpt-5.3-codex"),
+            false,
+        );
+        assert!(cmd.contains("-c 'model=\"gpt-5.3-codex\"'"));
+    }
+
+    #[test]
+    fn codex_command_can_force_api_login() {
+        let cmd = agent_command_with_model(AgentType::Codex, "codex", None, true);
+        assert!(cmd.contains("-c 'forced_login_method=\"api\"'"));
     }
 }
