@@ -1,4 +1,5 @@
-export type AgentType = "claude_code" | "gemini_cli" | "codex" | "terminal";
+export type AgentType = "claude_code" | "gemini_cli" | "codex" | "openrouter" | "terminal";
+export type CodexProvider = "openai" | "openrouter";
 
 export type SessionId = number;
 
@@ -7,6 +8,7 @@ export interface DetectedAgent {
   command: string;
   found: boolean;
   path?: string | null;
+  version?: string | null;
 }
 
 // Keep this aligned with the sidebar UI. Backend persistence currently defaults to "manual".
@@ -25,6 +27,7 @@ export interface SessionCreateArgs {
   branch?: string;
   workingDir?: string;
   model?: string;
+  codexProvider?: CodexProvider;
   env?: Record<string, string>;
 }
 
@@ -39,6 +42,8 @@ export interface SessionInfo {
   sessionId: SessionId;
   paneIndex: number;
   agentType: AgentType;
+  codexProvider?: CodexProvider;
+  model?: string;
   projectPath: string;
   branch?: string;
   workingDir?: string;
@@ -331,7 +336,7 @@ export interface SessionSnapshotMeta {
 
 export type SettingsAuthMode = "apiKey" | "oauth";
 
-export type AiProviderId = "anthropic" | "google" | "openai" | "ollama";
+export type AiProviderId = "anthropic" | "google" | "openai" | "openrouter" | "ollama";
 
 export interface ProviderAuthSettings {
   authMode?: SettingsAuthMode | null;
@@ -351,6 +356,7 @@ export interface AiProvidersSettings {
   anthropic: ProviderAuthSettings;
   google: ProviderAuthSettings;
   openai: ProviderAuthSettings;
+  openrouter: ProviderAuthSettings;
   ollama: OllamaSettings;
 }
 
@@ -436,6 +442,12 @@ export interface ProviderModelsResult {
   models: string[];
   message: string;
   statusCode?: number | null;
+}
+
+export interface OllamaPullResult {
+  ok: boolean;
+  model: string;
+  message: string;
 }
 
 // -----------------------------------------------------------------------------

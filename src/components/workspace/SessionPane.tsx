@@ -14,6 +14,8 @@ function agentBadge(agentType: SessionInfo["agentType"]) {
       return { icon: "GM", label: "Gemini", color: "bg-accent-blue/20 text-accent-blue border-accent-blue/40" };
     case "codex":
       return { icon: "CX", label: "Codex", color: "bg-accent-green/15 text-accent-green border-accent-green/40" };
+    case "openrouter":
+      return { icon: "OR", label: "OpenRouter", color: "bg-accent-orange/15 text-accent-orange border-accent-orange/40" };
     case "terminal":
     default:
       return { icon: ">>", label: "Terminal", color: "bg-bg-primary text-text-secondary border-border" };
@@ -63,6 +65,8 @@ function locationBadgeFor(session: SessionInfo): { label: string; title: string;
 
 export function SessionPane(props: {
   session: SessionInfo;
+  agentVersion?: string | null;
+  fallbackModel?: string | null;
   mode: InputMode;
   selected: boolean;
   active: boolean;
@@ -82,12 +86,23 @@ export function SessionPane(props: {
 
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const decoderRef = useRef<TextDecoder | null>(null);
 
   const resizeTimerRef = useRef<number | null>(null);
+  const initialResizeTimeoutRef = useRef<number | null>(null);
+  const initialResizeRafRef = useRef<number | null>(null);
 
   const badge = useMemo(() => agentBadge(session.agentType), [session.agentType]);
   const loc = useMemo(() => locationBadgeFor(session), [session.projectPath, session.workingDir, session.branch]);
+  const modelLabel = useMemo(() => {
+    const model = (session.model ?? "").trim();
+    if (model) return model;
+    const fallback = (props.fallbackModel ?? "").trim();
+    return fallback || "default model";
+  }, [session.model, props.fallbackModel]);
+  const versionLabel = useMemo(() => {
+    const v = (props.agentVersion ?? "").trim();
+    return v || "version unknown";
+  }, [props.agentVersion]);
   const title = useMemo(() => `Pane ${session.paneIndex + 1}`, [session.paneIndex]);
 
   useEffect(() => {
@@ -115,10 +130,18 @@ export function SessionPane(props: {
       scrollback: 5000,
     });
 
-    decoderRef.current = new TextDecoder();
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
+    sessionResize(session.sessionId, term.cols, term.rows).catch(() => {});
+    initialResizeRafRef.current = window.requestAnimationFrame(() => {
+      fit.fit();
+      sessionResize(session.sessionId, term.cols, term.rows).catch(() => {});
+    });
+    initialResizeTimeoutRef.current = window.setTimeout(() => {
+      fit.fit();
+      sessionResize(session.sessionId, term.cols, term.rows).catch(() => {});
+    }, 180);
 
     const writeDisposable = term.onData((data) => {
       sessionWrite(session.sessionId, data).catch(() => {});
@@ -135,15 +158,13 @@ export function SessionPane(props: {
     (async () => {
       try {
         const t = termRef.current;
-        const dec = decoderRef.current;
-        if (!t || !dec) return;
+        if (!t) return;
 
         const sb = await sessionScrollback(session.sessionId);
         if (disposed) return;
         if (sb.dataB64) {
           const bytes = decodeB64ToBytes(sb.dataB64);
-          const text = dec.decode(bytes, { stream: false });
-          if (text) t.write(text);
+          if (bytes.length > 0) t.write(bytes);
         }
       } catch {
         // Ignore: scrollback is an enhancement, not required.
@@ -152,11 +173,9 @@ export function SessionPane(props: {
         // Register per-session output handler (Workspace keeps a single Tauri listener).
         props.registerOutputHandler(session.sessionId, (dataB64) => {
           const t = termRef.current;
-          const dec = decoderRef.current;
-          if (!t || !dec) return;
+          if (!t) return;
           const bytes = decodeB64ToBytes(dataB64);
-          const text = dec.decode(bytes, { stream: true });
-          t.write(text);
+          if (bytes.length > 0) t.write(bytes);
         });
         didRegister = true;
       }
@@ -187,13 +206,20 @@ export function SessionPane(props: {
       if (resizeTimerRef.current !== null) {
         window.clearTimeout(resizeTimerRef.current);
       }
+      if (initialResizeTimeoutRef.current !== null) {
+        window.clearTimeout(initialResizeTimeoutRef.current);
+        initialResizeTimeoutRef.current = null;
+      }
+      if (initialResizeRafRef.current !== null) {
+        window.cancelAnimationFrame(initialResizeRafRef.current);
+        initialResizeRafRef.current = null;
+      }
 
       writeDisposable.dispose();
 
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
-      decoderRef.current = null;
     };
     // session.sessionId intentionally pins the terminal instance to the session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -247,6 +273,18 @@ export function SessionPane(props: {
           title={loc.title}
         >
           {loc.label}
+        </div>
+        <div
+          className="max-w-[34%] truncate rounded-md border border-border bg-bg-primary px-2 py-0.5 font-mono text-[10px] text-text-secondary"
+          title={modelLabel}
+        >
+          {modelLabel}
+        </div>
+        <div
+          className="max-w-[22%] truncate rounded-md border border-border bg-bg-primary px-2 py-0.5 font-mono text-[10px] text-text-secondary"
+          title={versionLabel}
+        >
+          {versionLabel}
         </div>
         <div className="ml-auto flex items-center gap-2">
           <div className="h-2 w-2 rounded-full bg-accent-green" title="active" />

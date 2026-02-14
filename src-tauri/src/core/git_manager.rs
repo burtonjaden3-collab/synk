@@ -166,7 +166,7 @@ fn slugify_branch(name: &str) -> String {
 }
 
 fn shell_join(args: &[&str]) -> String {
-    args.iter().copied().collect::<Vec<_>>().join(" ")
+    args.to_vec().join(" ")
 }
 
 fn decode_utf8_lossy(bytes: &[u8]) -> String {
@@ -511,7 +511,12 @@ impl GitManager {
         }
 
         let branches = self.list_branches().unwrap_or_default();
-        let preview = branches.iter().take(20).cloned().collect::<Vec<_>>().join(", ");
+        let preview = branches
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         bail!(
             "base branch '{base}' not found. Local branches (first {}): {}",
             branches.len().min(20),
@@ -596,96 +601,76 @@ impl GitManager {
             .run_git(&["worktree", "list", "--porcelain"])
             .context("git worktree list --porcelain")?;
 
-        fn flush_current(
-            out: &mut Vec<WorktreeInfo>,
-            worktree_root: &Path,
-            cur_path: &mut Option<String>,
-            cur_head: &mut Option<String>,
-            cur_branch: &mut Option<String>,
-            cur_detached: &mut bool,
-            cur_locked: &mut bool,
-            cur_prunable: &mut bool,
-        ) {
-            if let Some(path) = cur_path.take() {
-                let is_synk_managed = Path::new(&path).starts_with(worktree_root);
-                out.push(WorktreeInfo {
-                    path,
-                    head: cur_head.take(),
-                    branch: cur_branch.take(),
-                    detached: *cur_detached,
-                    locked: *cur_locked,
-                    prunable: *cur_prunable,
-                    is_synk_managed,
-                });
+        #[derive(Default)]
+        struct CurrentWorktree {
+            path: Option<String>,
+            head: Option<String>,
+            branch: Option<String>,
+            detached: bool,
+            locked: bool,
+            prunable: bool,
+        }
+
+        impl CurrentWorktree {
+            fn flush_into(&mut self, out: &mut Vec<WorktreeInfo>, worktree_root: &Path) {
+                if let Some(path) = self.path.take() {
+                    let is_synk_managed = Path::new(&path).starts_with(worktree_root);
+                    out.push(WorktreeInfo {
+                        path,
+                        head: self.head.take(),
+                        branch: self.branch.take(),
+                        detached: self.detached,
+                        locked: self.locked,
+                        prunable: self.prunable,
+                        is_synk_managed,
+                    });
+                }
+                self.head = None;
+                self.branch = None;
+                self.detached = false;
+                self.locked = false;
+                self.prunable = false;
             }
-            *cur_head = None;
-            *cur_branch = None;
-            *cur_detached = false;
-            *cur_locked = false;
-            *cur_prunable = false;
         }
 
         let mut out: Vec<WorktreeInfo> = Vec::new();
-        let mut cur_path: Option<String> = None;
-        let mut cur_head: Option<String> = None;
-        let mut cur_branch: Option<String> = None;
-        let mut cur_detached = false;
-        let mut cur_locked = false;
-        let mut cur_prunable = false;
+        let mut current = CurrentWorktree::default();
 
         for line in text.lines() {
             let line = line.trim_end();
             if line.is_empty() {
-                flush_current(
-                    &mut out,
-                    &self.worktree_project_root,
-                    &mut cur_path,
-                    &mut cur_head,
-                    &mut cur_branch,
-                    &mut cur_detached,
-                    &mut cur_locked,
-                    &mut cur_prunable,
-                );
+                current.flush_into(&mut out, &self.worktree_project_root);
                 continue;
             }
 
             if let Some(v) = line.strip_prefix("worktree ") {
-                cur_path = Some(v.trim().to_string());
+                current.path = Some(v.trim().to_string());
                 continue;
             }
             if let Some(v) = line.strip_prefix("HEAD ") {
-                cur_head = Some(v.trim().to_string());
+                current.head = Some(v.trim().to_string());
                 continue;
             }
             if let Some(v) = line.strip_prefix("branch ") {
                 let raw = v.trim();
                 let cleaned = raw.strip_prefix("refs/heads/").unwrap_or(raw).to_string();
-                cur_branch = Some(cleaned);
+                current.branch = Some(cleaned);
                 continue;
             }
             if line == "detached" {
-                cur_detached = true;
+                current.detached = true;
                 continue;
             }
             if line.starts_with("locked") {
-                cur_locked = true;
+                current.locked = true;
                 continue;
             }
             if line.starts_with("prunable") {
-                cur_prunable = true;
+                current.prunable = true;
                 continue;
             }
         }
-        flush_current(
-            &mut out,
-            &self.worktree_project_root,
-            &mut cur_path,
-            &mut cur_head,
-            &mut cur_branch,
-            &mut cur_detached,
-            &mut cur_locked,
-            &mut cur_prunable,
-        );
+        current.flush_into(&mut out, &self.worktree_project_root);
 
         Ok(out)
     }
@@ -763,7 +748,12 @@ impl GitManager {
                 );
             }
             let branches = self.list_branches().unwrap_or_default();
-            let preview = branches.iter().take(20).cloned().collect::<Vec<_>>().join(", ");
+            let preview = branches
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
             bail!(
                 "feature branch '{branch}' not found. Local branches (first {}): {}",
                 branches.len().min(20),
@@ -940,10 +930,15 @@ impl GitManager {
                         .current_dir(&dir)
                         .args(["rebase", &base_branch])
                         .status()
-                        .with_context(|| format!("git rebase {base_branch} (in {})", dir.display()))?;
+                        .with_context(|| {
+                            format!("git rebase {base_branch} (in {})", dir.display())
+                        })?;
                     if !st.success() {
                         let files = self.get_conflict_files_in(&dir)?;
-                        let _ = Command::new("git").current_dir(&dir).args(["rebase", "--abort"]).status();
+                        let _ = Command::new("git")
+                            .current_dir(&dir)
+                            .args(["rebase", "--abort"])
+                            .status();
                         return Ok(MergeResult {
                             success: false,
                             conflict_files: Some(files),

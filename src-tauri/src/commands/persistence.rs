@@ -176,7 +176,7 @@ pub fn session_snapshot_list(
     let project_path = args.project_path.map(PathBuf::from);
     crate::core::persistence::session_snapshot_list(
         &app,
-        project_path.as_ref().map(|p| p.as_path()),
+        project_path.as_deref(),
     )
     .map_err(|e| format!("{e:#}"))
 }

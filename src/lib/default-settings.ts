@@ -2,11 +2,11 @@ import type { AppSettings } from "./types";
 
 export function defaultAppSettings(): AppSettings {
   return {
-    version: 3,
+    version: 4,
     aiProviders: {
       default: "anthropic",
       anthropic: {
-        authMode: "oauth",
+        authMode: "apiKey",
         apiKey: null,
         oauthConnected: false,
         oauthEmail: null,
@@ -26,6 +26,13 @@ export function defaultAppSettings(): AppSettings {
         oauthEmail: null,
         // Used for Codex panes today (Codex CLI), and as the default OpenAI model in general.
         defaultModel: "gpt-5.3-codex",
+      },
+      openrouter: {
+        authMode: "apiKey",
+        apiKey: null,
+        oauthConnected: false,
+        oauthEmail: null,
+        defaultModel: "openrouter/auto",
       },
       ollama: {
         baseUrl: "http://localhost:11434",

@@ -15,6 +15,8 @@ function agentLabel(t: DetectedAgent["agentType"]): string {
       return "Gemini CLI";
     case "codex":
       return "OpenAI Codex";
+    case "openrouter":
+      return "OpenRouter";
     case "terminal":
       return "Terminal";
     default:

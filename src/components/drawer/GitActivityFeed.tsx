@@ -104,16 +104,22 @@ export function GitActivityFeed(props: { tauriAvailable: boolean; projectPath: s
     if (!projectPath) return;
 
     let unlisten: (() => void) | null = null;
+    let disposed = false;
     onGitEvent((ev) => {
       if (ev.projectPath !== projectPath) return;
 
       appendGitEvent(projectPath, ev);
       setUnseen((n) => (stickToBottomRef.current ? 0 : n + 1));
     }).then((fn) => {
-      unlisten = fn;
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
     });
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, [tauriAvailable, projectPath, appendGitEvent]);

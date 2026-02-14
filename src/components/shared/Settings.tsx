@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   AiProviderId,
   AppSettings,
   MergeStrategy,
+  NotificationsSettings,
   ProviderKeyValidationResult,
   ProviderModelsResult,
   TerminalExitMethod,
@@ -12,12 +13,12 @@ import type {
 import {
   settingsGet,
   settingsListProviderModels,
+  settingsOllamaPullModel,
   settingsSet,
   settingsValidateProviderKey,
 } from "../../lib/tauri-api";
 import { useAppStore } from "../../lib/store";
 import { defaultAppSettings } from "../../lib/default-settings";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { KNOWN_MODELS, mergeModelLists } from "../../lib/known-models";
 
 type SettingsProps = {
@@ -36,21 +37,41 @@ type TabId =
   | "sessions"
   | "about";
 
+const NOTIFICATION_TOGGLES: ReadonlyArray<{
+  key: keyof Pick<NotificationsSettings, "taskCompleted" | "agentError" | "mergeConflict" | "reviewReady">;
+  label: string;
+}> = [
+  { key: "taskCompleted", label: "Task completed" },
+  { key: "agentError", label: "Agent error" },
+  { key: "mergeConflict", label: "Merge conflict" },
+  { key: "reviewReady", label: "Review ready" },
+];
+
+const ALL_AI_PROVIDERS: readonly AiProviderId[] = ["anthropic", "google", "openai", "openrouter", "ollama"];
+
 function defaultSettings(): AppSettings {
   return defaultAppSettings();
 }
 
-function oauthUrlFor(provider: AiProviderId): string {
-  switch (provider) {
-    case "anthropic":
-      return "https://claude.ai";
-    case "google":
-      return "https://aistudio.google.com";
-    case "openai":
-      return "https://platform.openai.com";
-    case "ollama":
-      return "http://localhost:11434";
-  }
+function ensureAiProvidersShape(aiProviders: unknown): AppSettings["aiProviders"] {
+  const defaults = defaultAppSettings().aiProviders;
+  const raw = (aiProviders ?? {}) as Partial<AppSettings["aiProviders"]>;
+  const nextDefault = raw.default as AiProviderId | undefined;
+  return {
+    default: nextDefault && ALL_AI_PROVIDERS.includes(nextDefault) ? nextDefault : defaults.default,
+    anthropic: { ...defaults.anthropic, ...(raw.anthropic ?? {}) },
+    google: { ...defaults.google, ...(raw.google ?? {}) },
+    openai: { ...defaults.openai, ...(raw.openai ?? {}) },
+    openrouter: { ...defaults.openrouter, ...(raw.openrouter ?? {}) },
+    ollama: { ...defaults.ollama, ...(raw.ollama ?? {}) },
+  };
+}
+
+function ensureSettingsShape(input: AppSettings): AppSettings {
+  return {
+    ...input,
+    aiProviders: ensureAiProvidersShape((input as { aiProviders?: unknown }).aiProviders),
+  };
 }
 
 function clampInt(n: number, min: number, max: number): number {
@@ -115,6 +136,35 @@ function tabLabel(id: TabId) {
   }
 }
 
+function providerModelUsageHint(provider: AiProviderId): string {
+  switch (provider) {
+    case "anthropic":
+      return "Used for new/restarted Claude Code sessions.";
+    case "google":
+      return "Used for new/restarted Gemini CLI sessions.";
+    case "openai":
+      return "Used for new/restarted Codex sessions.";
+    case "openrouter":
+      return "Used for OpenRouter model defaults.";
+    case "ollama":
+      return "Used for local Ollama model defaults.";
+  }
+}
+
+function providerApiKey(settings: AppSettings["aiProviders"], provider: Exclude<AiProviderId, "ollama">): string {
+  const safe = ensureAiProvidersShape(settings);
+  switch (provider) {
+    case "anthropic":
+      return safe.anthropic.apiKey ?? "";
+    case "google":
+      return safe.google.apiKey ?? "";
+    case "openai":
+      return safe.openai.apiKey ?? "";
+    case "openrouter":
+      return safe.openrouter.apiKey ?? "";
+  }
+}
+
 function pill(ok: boolean | null) {
   if (ok === null) return { text: "...", cls: "border-border text-text-secondary bg-bg-primary" };
   if (ok) return { text: "OK", cls: "border-accent-green/40 text-accent-green bg-accent-green/10" };
@@ -138,8 +188,14 @@ export function Settings(props: SettingsProps) {
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, string[]>>({});
   const [modelsStatus, setModelsStatus] = useState<Record<string, ProviderModelsResult | null>>({});
   const [modelsBusy, setModelsBusy] = useState<Record<string, boolean>>({});
+  const [ollamaInstallModel, setOllamaInstallModel] = useState("");
+  const [ollamaInstallBusy, setOllamaInstallBusy] = useState(false);
+  const [ollamaInstallMessage, setOllamaInstallMessage] = useState<string | null>(null);
   const saveTimerRef = useRef<number | null>(null);
+  const statusTimerRef = useRef<number | null>(null);
   const validateTimersRef = useRef<Record<string, number | null>>({});
+  const autoLoadedModelKeyRef = useRef<Record<string, string>>({});
+  const initializedForOpenRef = useRef(false);
 
   const tabs: TabId[] = useMemo(
     () => ["ai", "performance", "keyboard", "appearance", "notifications", "git", "sessions", "about"],
@@ -160,7 +216,13 @@ export function Settings(props: SettingsProps) {
       setSettings(saved);
       setDraft(saved);
       setStatus("Saved");
-      window.setTimeout(() => setStatus(null), 1200);
+      if (statusTimerRef.current !== null) {
+        window.clearTimeout(statusTimerRef.current);
+      }
+      statusTimerRef.current = window.setTimeout(() => {
+        statusTimerRef.current = null;
+        setStatus(null);
+      }, 1200);
     } catch (e) {
       setError(String(e));
       setStatus(null);
@@ -170,6 +232,7 @@ export function Settings(props: SettingsProps) {
   };
 
   const scheduleSave = (next: AppSettings) => {
+    if (!tauriAvailable) return;
     if (saveTimerRef.current !== null) {
       window.clearTimeout(saveTimerRef.current);
     }
@@ -201,7 +264,12 @@ export function Settings(props: SettingsProps) {
   };
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      initializedForOpenRef.current = false;
+      return;
+    }
+    if (initializedForOpenRef.current) return;
+    initializedForOpenRef.current = true;
 
     setError(null);
     setStatus(null);
@@ -209,7 +277,11 @@ export function Settings(props: SettingsProps) {
     setModelsByProvider({});
     setModelsStatus({});
     setModelsBusy({});
+    setOllamaInstallModel("");
+    setOllamaInstallBusy(false);
+    setOllamaInstallMessage(null);
     setShowKeys({});
+    autoLoadedModelKeyRef.current = {};
 
     if (settings) {
       setDraft(settings);
@@ -235,6 +307,10 @@ export function Settings(props: SettingsProps) {
         window.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
       }
+      if (statusTimerRef.current !== null) {
+        window.clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = null;
+      }
       for (const id of Object.keys(validateTimersRef.current)) {
         const t = validateTimersRef.current[id];
         if (t != null) window.clearTimeout(t);
@@ -243,35 +319,116 @@ export function Settings(props: SettingsProps) {
     };
   }, []);
 
-  if (!open) return null;
-
-  const s = draft ?? defaultSettings();
+  const s = useMemo(() => ensureSettingsShape(draft ?? defaultSettings()), [draft]);
 
   const setDraftAndSave = (next: AppSettings) => {
     setDraft(next);
     scheduleSave(next);
   };
 
+  const loadProviderModels = useCallback(
+    async (providerId: AiProviderId, rawKey: string, baseUrl?: string) => {
+      const apiKey = rawKey.trim();
+      if (!tauriAvailable) return;
+      if (providerId !== "ollama" && !apiKey) return;
+      setModelsBusy((m) => ({ ...m, [providerId]: true }));
+      try {
+        const res = await settingsListProviderModels(providerId, apiKey, baseUrl ?? null);
+        setModelsStatus((m) => ({ ...m, [providerId]: res }));
+        setModelsByProvider((m) => ({ ...m, [providerId]: res.models ?? [] }));
+      } catch (e) {
+        setModelsStatus((m) => ({
+          ...m,
+          [providerId]: { ok: false, models: [], message: String(e), statusCode: null },
+        }));
+      } finally {
+        setModelsBusy((m) => ({ ...m, [providerId]: false }));
+      }
+    },
+    [tauriAvailable],
+  );
+
+  const loadOllamaModels = useCallback(
+    async (baseUrl: string) => {
+      await loadProviderModels("ollama", "", baseUrl);
+    },
+    [loadProviderModels],
+  );
+
+  // Auto-load latest model lists for API-key providers when settings open.
+  useEffect(() => {
+    if (!open || !tauriAvailable) return;
+    if (!draft) return;
+    const providers: Exclude<AiProviderId, "ollama">[] = ["anthropic", "openai", "openrouter", "google"];
+    for (const providerId of providers) {
+      const key = providerApiKey(draft.aiProviders, providerId).trim();
+      if (key.length < 8) continue;
+      if (autoLoadedModelKeyRef.current[providerId] === key) continue;
+      autoLoadedModelKeyRef.current[providerId] = key;
+      loadProviderModels(providerId, key).catch(() => {});
+    }
+  }, [open, tauriAvailable, draft, loadProviderModels]);
+
+  // Keep Ollama models synced while Settings is open so newly-pulled models appear without manual refresh.
+  useEffect(() => {
+    if (!open || !tauriAvailable || !draft) return;
+    const baseUrl = draft.aiProviders.ollama.baseUrl;
+    loadOllamaModels(baseUrl).catch(() => {});
+    const timer = window.setInterval(() => {
+      loadOllamaModels(baseUrl).catch(() => {});
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [open, tauriAvailable, draft?.aiProviders.ollama.baseUrl, loadOllamaModels]);
+
   const ProviderCard = (p: { id: AiProviderId; title: string; desc: string }) => {
     if (p.id === "ollama") {
+      const provider = s.aiProviders.ollama;
+      const models = modelsByProvider[p.id] ?? [];
+      const modelOptions = mergeModelLists(models, KNOWN_MODELS.ollama);
+      const modelsMeta = modelsStatus[p.id] ?? null;
+      const loadingModels = !!modelsBusy[p.id];
+
+      const loadModels = async () => {
+        await loadOllamaModels(provider.baseUrl);
+      };
+
+      const installModel = async () => {
+        const model = (ollamaInstallModel || provider.defaultModel).trim();
+        if (!model) return;
+        setOllamaInstallBusy(true);
+        setOllamaInstallMessage(null);
+        try {
+          const res = await settingsOllamaPullModel(model, provider.baseUrl);
+          setOllamaInstallMessage(res.message);
+          if (res.ok) {
+            setOllamaInstallModel("");
+            await loadModels();
+          }
+        } catch (e) {
+          setOllamaInstallMessage(String(e));
+        } finally {
+          setOllamaInstallBusy(false);
+        }
+      };
+
       return (
         <div className="rounded-2xl border border-border bg-bg-secondary p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0">
               <div className="text-sm font-semibold">{p.title}</div>
-              <div className="mt-1 text-xs text-text-secondary">{p.desc}</div>
+              <div className="mt-1 break-words text-xs text-text-secondary">{p.desc}</div>
             </div>
-            <div className="rounded-full border border-border bg-bg-primary px-2 py-1 font-mono text-[10px] text-text-secondary">
-              local
+            <div className="shrink-0 rounded-full border border-border bg-bg-primary px-2 py-1 font-mono text-[10px] text-text-secondary">
+              local API
             </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
             <label className="block">
               <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">BASE URL</div>
               <input
                 className="mt-1 h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
-                value={s.aiProviders.ollama.baseUrl}
+                value={provider.baseUrl}
                 onChange={(e) =>
                   setDraftAndSave({
                     ...s,
@@ -282,23 +439,108 @@ export function Settings(props: SettingsProps) {
                   })
                 }
               />
+              <div className="mt-2 text-[11px] text-text-secondary">
+                Polling every 10s while Settings is open.
+              </div>
             </label>
-            <label className="block">
+            <label className="block min-w-0">
               <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">DEFAULT MODEL</div>
-              <input
-                className="mt-1 h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
-                value={s.aiProviders.ollama.defaultModel}
-                onChange={(e) =>
-                  setDraftAndSave({
-                    ...s,
-                    aiProviders: {
-                      ...s.aiProviders,
-                      ollama: { ...s.aiProviders.ollama, defaultModel: e.target.value },
-                    },
-                  })
-                }
-              />
+              <div className="mt-1 grid grid-cols-1 gap-2">
+                <input
+                  className="h-9 min-w-0 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
+                  list="synk-models-ollama"
+                  value={provider.defaultModel}
+                  placeholder="type a model name…"
+                  onChange={(e) =>
+                    setDraftAndSave({
+                      ...s,
+                      aiProviders: {
+                        ...s.aiProviders,
+                        ollama: { ...s.aiProviders.ollama, defaultModel: e.target.value },
+                      },
+                    })
+                  }
+                />
+                <select
+                  className="h-9 min-w-0 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
+                  value={modelOptions.includes(provider.defaultModel) ? provider.defaultModel : ""}
+                  onChange={(e) =>
+                    setDraftAndSave({
+                      ...s,
+                      aiProviders: {
+                        ...s.aiProviders,
+                        ollama: { ...s.aiProviders.ollama, defaultModel: e.target.value },
+                      },
+                    })
+                  }
+                  title={models.length ? "Models loaded from local Ollama" : "Curated starter list"}
+                >
+                  <option value="" disabled>
+                    Pick…
+                  </option>
+                  {modelOptions.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <datalist id="synk-models-ollama">
+                {modelOptions.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+              <div className="mt-2 flex flex-col gap-2 text-[11px] text-text-secondary sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 break-words">
+                  {models.length ? (
+                    <>
+                      {models.length} local models detected
+                      {modelsMeta?.statusCode ? <span className="ml-1 opacity-70">({modelsMeta.statusCode})</span> : null}
+                    </>
+                  ) : (
+                    "No local models detected yet (you can install one below)"
+                  )}
+                </div>
+                <button
+                  className="self-start rounded-md border border-border bg-bg-primary px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-60 sm:self-auto"
+                  disabled={loadingModels}
+                  onClick={() => loadModels().catch(() => {})}
+                  type="button"
+                  title="Fetch models from local Ollama (/api/tags)"
+                >
+                  {loadingModels ? "Loading..." : models.length ? "Refresh" : "Load models"}
+                </button>
+              </div>
+              <div className="mt-1 text-[11px] text-text-secondary/80">{providerModelUsageHint(p.id)}</div>
             </label>
+          </div>
+
+          <div className="mt-3 rounded-xl border border-border bg-bg-tertiary p-3">
+            <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">INSTALL MODEL</div>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                className="h-9 w-full rounded-lg border border-border bg-bg-primary px-2 text-xs text-text-primary"
+                list="synk-models-ollama"
+                placeholder="e.g. qwen2.5-coder:7b"
+                value={ollamaInstallModel}
+                onChange={(e) => setOllamaInstallModel(e.target.value)}
+              />
+              <button
+                className="h-9 w-full shrink-0 rounded-lg border border-accent-blue/35 bg-bg-primary px-3 text-xs font-semibold text-text-primary hover:bg-bg-hover disabled:opacity-60 sm:w-auto"
+                disabled={ollamaInstallBusy || !(ollamaInstallModel || provider.defaultModel).trim()}
+                onClick={() => installModel().catch(() => {})}
+                type="button"
+                title="Pull model into local Ollama"
+              >
+                {ollamaInstallBusy ? "Installing..." : "Install"}
+              </button>
+            </div>
+            <div className="mt-2 text-[11px] text-text-secondary">
+              Runs <span className="font-mono">POST /api/pull</span> against your Ollama server.
+            </div>
+            {ollamaInstallMessage ? (
+              <div className="mt-2 break-words text-[11px] text-text-secondary">{ollamaInstallMessage}</div>
+            ) : null}
           </div>
         </div>
       );
@@ -310,49 +552,37 @@ export function Settings(props: SettingsProps) {
     const v = validation[p.id] ?? null;
     const badge = pill(v ? v.ok : null);
     const models = modelsByProvider[p.id] ?? [];
-    const modelOptions = useMemo(() => mergeModelLists(models, KNOWN_MODELS[p.id]), [models, p.id]);
+    const modelOptions = mergeModelLists(models, KNOWN_MODELS[p.id]);
     const modelsMeta = modelsStatus[p.id] ?? null;
     const loadingModels = !!modelsBusy[p.id];
 
     const loadModels = async () => {
       const apiKey = (provider.apiKey ?? "").trim();
       if (!apiKey) return;
-      setModelsBusy((m) => ({ ...m, [p.id]: true }));
-      try {
-        const res = await settingsListProviderModels(p.id, apiKey);
-        setModelsStatus((m) => ({ ...m, [p.id]: res }));
-        if (res.models?.length) setModelsByProvider((m) => ({ ...m, [p.id]: res.models }));
-      } catch (e) {
-        setModelsStatus((m) => ({
-          ...m,
-          [p.id]: { ok: false, models: [], message: String(e), statusCode: null },
-        }));
-      } finally {
-        setModelsBusy((m) => ({ ...m, [p.id]: false }));
-      }
+      await loadProviderModels(p.id, apiKey);
     };
 
     return (
       <div className="rounded-2xl border border-border bg-bg-secondary p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="min-w-0">
             <div className="text-sm font-semibold">{p.title}</div>
-            <div className="mt-1 text-xs text-text-secondary">{p.desc}</div>
+            <div className="mt-1 break-words text-xs text-text-secondary">{p.desc}</div>
           </div>
-          <div className={["rounded-full border px-2 py-1 font-mono text-[10px]", badge.cls].join(" ")}>
+          <div className={["shrink-0 rounded-full border px-2 py-1 font-mono text-[10px]", badge.cls].join(" ")}>
             {badge.text}
             {v?.statusCode ? <span className="ml-1 opacity-75">({v.statusCode})</span> : null}
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
           <label className="block">
             <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">AUTH MODE</div>
             <select
               className="mt-1 h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
-              value={authMode ?? ""}
+              value={authMode === "apiKey" ? "apiKey" : ""}
               onChange={(e) => {
-                const nextMode = (e.target.value || null) as "apiKey" | "oauth" | null;
+                const nextMode = (e.target.value || null) as "apiKey" | null;
                 setDraftAndSave({
                   ...s,
                   aiProviders: {
@@ -364,15 +594,14 @@ export function Settings(props: SettingsProps) {
             >
               <option value="">(unset)</option>
               <option value="apiKey">API key</option>
-              <option value="oauth">OAuth</option>
             </select>
           </label>
 
-          <label className="block">
+          <label className="block min-w-0">
             <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">DEFAULT MODEL</div>
-            <div className="mt-1 flex items-center gap-2">
+            <div className="mt-1 grid grid-cols-1 gap-2">
               <input
-                className="h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
+                className="h-9 min-w-0 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
                 list={`synk-models-${p.id}`}
                 value={provider.defaultModel}
                 placeholder="type a model name…"
@@ -387,7 +616,7 @@ export function Settings(props: SettingsProps) {
                 }
               />
               <select
-                className="h-9 w-[190px] rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
+                className="h-9 min-w-0 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
                 value={modelOptions.includes(provider.defaultModel) ? provider.defaultModel : ""}
                 onChange={(e) =>
                   setDraftAndSave({
@@ -415,19 +644,19 @@ export function Settings(props: SettingsProps) {
                 <option key={m} value={m} />
               ))}
             </datalist>
-            <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-text-secondary">
-              <div className="truncate">
+            <div className="mt-2 flex flex-col gap-2 text-[11px] text-text-secondary sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0 break-words">
                 {models.length ? (
                   <>
                     {models.length} models loaded
                     {modelsMeta?.statusCode ? <span className="ml-1 opacity-70">({modelsMeta.statusCode})</span> : null}
                   </>
                 ) : (
-                  "Using curated model list"
+                  "Using curated model list (add API key to fetch latest provider models)"
                 )}
               </div>
               <button
-                className="rounded-md border border-border bg-bg-primary px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-60"
+                className="self-start rounded-md border border-border bg-bg-primary px-2 py-1 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-60 sm:self-auto"
                 disabled={loadingModels || !key.trim()}
                 onClick={() => loadModels().catch(() => {})}
                 type="button"
@@ -436,6 +665,7 @@ export function Settings(props: SettingsProps) {
                 {loadingModels ? "Loading..." : models.length ? "Refresh" : "Load models"}
               </button>
             </div>
+            <div className="mt-1 text-[11px] text-text-secondary/80">{providerModelUsageHint(p.id)}</div>
           </label>
         </div>
 
@@ -450,11 +680,11 @@ export function Settings(props: SettingsProps) {
               {showKeys[p.id] ? "Hide" : "Show"}
             </button>
           </div>
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
             <input
               className="h-9 w-full rounded-lg border border-border bg-bg-primary px-2 font-mono text-[12px] text-text-primary"
               type={showKeys[p.id] ? "text" : "password"}
-              placeholder={authMode === "oauth" ? "(optional in OAuth mode)" : "paste key..."}
+              placeholder="paste key..."
               value={key}
               onChange={(e) => {
                 const nextKey = e.target.value;
@@ -470,7 +700,7 @@ export function Settings(props: SettingsProps) {
               }}
             />
             <button
-              className="h-9 shrink-0 rounded-lg border border-accent-blue/35 bg-bg-primary px-3 text-xs font-semibold text-text-primary hover:bg-bg-hover disabled:opacity-60"
+              className="h-9 w-full shrink-0 rounded-lg border border-accent-blue/35 bg-bg-primary px-3 text-xs font-semibold text-text-primary hover:bg-bg-hover disabled:opacity-60 sm:w-auto"
               disabled={saving || !key.trim()}
               onClick={async () => {
                 try {
@@ -492,55 +722,46 @@ export function Settings(props: SettingsProps) {
               Validate
             </button>
           </div>
-          <div className="mt-2 text-[11px] text-text-secondary">
-            Stored in plaintext in <span className="font-mono">~/.config/synk/settings.json</span>.
-          </div>
-        </div>
-
-        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-bg-tertiary p-3">
-          <div className="min-w-0">
-            <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">OAUTH</div>
-            <div className="mt-1 truncate text-[11px] text-text-secondary">
-              {provider.oauthConnected ? `Connected as ${provider.oauthEmail ?? "(unknown)"}` : "Not connected"}
+          {v ? (
+            <div
+              className={[
+                "mt-2 rounded-lg border px-2 py-2 text-[11px]",
+                v.ok
+                  ? "border-accent-green/35 bg-accent-green/10 text-accent-green"
+                  : "border-accent-red/35 bg-accent-red/10 text-accent-red",
+              ].join(" ")}
+            >
+              {v.message || (v.ok ? "Valid" : "Invalid")}
             </div>
+          ) : (
+            <div className="mt-2 text-[11px] text-text-secondary">
+              Paste an API key and click Validate to test connectivity.
+            </div>
+          )}
+          <div className="mt-2 break-words text-[11px] text-text-secondary">
+            Stored in plaintext in <span className="break-all font-mono">~/.config/synk/settings.json</span>.
           </div>
-          <button
-            className="rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs font-semibold text-text-secondary disabled:opacity-60"
-            type="button"
-            title="Opens the provider sign-in page. After signing in, mark connected so Synk can remember."
-            onClick={async () => {
-              // Phase 2 strict: provide a usable sign-in workflow and persist the connected flag.
-              // Note: this does not obtain tokens yet; it only records that the user has signed in.
-              try {
-                await openUrl(oauthUrlFor(p.id));
-              } catch {
-                // ignore; user can still mark connected manually
-              }
-              const email = window.prompt("Enter the account email to display (optional):", provider.oauthEmail ?? "");
-              setDraftAndSave({
-                ...s,
-                aiProviders: {
-                  ...s.aiProviders,
-                  [p.id]: {
-                    ...provider,
-                    authMode: "oauth",
-                    oauthConnected: true,
-                    oauthEmail: email && email.trim() ? email.trim() : null,
-                  },
-                },
-              });
-            }}
-          >
-            Sign In…
-          </button>
         </div>
       </div>
     );
   };
 
+  if (!open) return null;
+
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-4">
-      <div className="relative w-full max-w-6xl overflow-hidden rounded-[28px] border border-border bg-bg-secondary shadow-[0_40px_120px_rgba(0,0,0,0.65)]">
+    <div
+      aria-modal="true"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-4"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      role="dialog"
+      aria-labelledby="settings-dialog-title"
+    >
+      <div
+        className="relative w-full max-w-6xl overflow-hidden rounded-[28px] border border-border bg-bg-secondary shadow-[0_40px_120px_rgba(0,0,0,0.65)]"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <div className="pointer-events-none absolute inset-0">
           <div className="absolute -left-24 -top-24 h-[420px] w-[420px] rounded-full bg-accent-blue/10 blur-3xl" />
           <div className="absolute -bottom-28 -right-28 h-[520px] w-[520px] rounded-full bg-accent-green/8 blur-3xl" />
@@ -553,20 +774,22 @@ export function Settings(props: SettingsProps) {
           />
         </div>
 
-        <div className="relative flex h-[min(82vh,760px)] min-h-0 w-full">
-          <div className="flex w-[270px] min-h-0 shrink-0 flex-col border-r border-border bg-[#181825]">
-            <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-4">
-              <div>
+        <div className="relative flex h-[min(90vh,760px)] min-h-0 w-full flex-col md:h-[min(82vh,760px)] md:flex-row">
+          <div className="flex w-full min-h-0 shrink-0 flex-col border-b border-border bg-[#181825] md:w-[270px] md:border-b-0 md:border-r">
+            <div className="flex min-w-0 items-start justify-between gap-3 border-b border-border px-4 py-4">
+              <div className="min-w-0">
                 <div className="font-mono text-[11px] font-semibold tracking-[0.22em] text-text-secondary">
                   SETTINGS
                 </div>
-                <div className="mt-1 text-sm font-semibold text-text-primary">Synk</div>
+                <div className="mt-1 text-sm font-semibold text-text-primary" id="settings-dialog-title">
+                  Synk
+                </div>
                 <div className="mt-1 text-[11px] text-text-secondary">
                   <span className="font-mono">Ctrl+,</span> to toggle
                 </div>
               </div>
               <button
-                className="rounded-lg border border-border bg-bg-secondary px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-hover"
+                className="shrink-0 rounded-lg border border-border bg-bg-secondary px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-hover"
                 onClick={onClose}
                 type="button"
               >
@@ -583,7 +806,7 @@ export function Settings(props: SettingsProps) {
                     <button
                       key={id}
                       className={[
-                        "w-full rounded-xl border px-3 py-2 text-left transition-colors",
+                        "w-full min-w-0 rounded-xl border px-3 py-2 text-left transition-colors",
                         active
                           ? "border-accent-blue/45 bg-bg-secondary"
                           : "border-border bg-bg-tertiary hover:bg-bg-hover",
@@ -591,13 +814,13 @@ export function Settings(props: SettingsProps) {
                       onClick={() => setTab(id)}
                       type="button"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-xs font-semibold text-text-primary">{l.title}</div>
-                        <div className="rounded-full border border-border bg-bg-primary px-2 py-0.5 font-mono text-[10px] text-text-secondary">
+                      <div className="flex min-w-0 items-start justify-between gap-2">
+                        <div className="min-w-0 break-words text-xs font-semibold text-text-primary">{l.title}</div>
+                        <div className="shrink-0 rounded-full border border-border bg-bg-primary px-2 py-0.5 font-mono text-[10px] text-text-secondary">
                           {id}
                         </div>
                       </div>
-                      <div className="mt-1 text-[11px] text-text-secondary">{l.hint}</div>
+                      <div className="mt-1 break-words text-[11px] text-text-secondary">{l.hint}</div>
                     </button>
                   );
                 })}
@@ -609,7 +832,7 @@ export function Settings(props: SettingsProps) {
                   {saving ? "Saving..." : status ? status : "Idle"}
                 </div>
                 {error ? (
-                  <div className="mt-2 rounded-xl border border-accent-red/40 bg-accent-red/10 px-2 py-2 text-[11px] text-accent-red">
+                  <div className="mt-2 break-words rounded-xl border border-accent-red/40 bg-accent-red/10 px-2 py-2 text-[11px] text-accent-red">
                     {error}
                   </div>
                 ) : null}
@@ -626,7 +849,7 @@ export function Settings(props: SettingsProps) {
           </div>
 
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-            <div className="h-full min-h-0 overflow-y-auto px-6 py-5 [overscroll-behavior:contain]">
+            <div className="h-full min-h-0 overflow-y-auto px-4 py-5 md:px-6 [overscroll-behavior:contain]">
               {tab === "ai" ? (
                 <div>
                   <div className="flex flex-wrap items-end justify-between gap-3">
@@ -653,15 +876,17 @@ export function Settings(props: SettingsProps) {
                         <option value="anthropic">anthropic</option>
                         <option value="google">google</option>
                         <option value="openai">openai</option>
+                        <option value="openrouter">openrouter</option>
                         <option value="ollama">ollama</option>
                       </select>
                     </label>
                   </div>
 
                   <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-2">
-                    <ProviderCard id="anthropic" title="Anthropic" desc="Claude via API key or OAuth" />
-                    <ProviderCard id="openai" title="OpenAI" desc="Chat Completions via key or OAuth" />
-                    <ProviderCard id="google" title="Google" desc="Gemini via API key or OAuth" />
+                    <ProviderCard id="anthropic" title="Anthropic" desc="Claude via API key" />
+                    <ProviderCard id="openai" title="OpenAI" desc="Chat Completions via API key" />
+                    <ProviderCard id="openrouter" title="OpenRouter" desc="Open-source + hosted models via API key" />
+                    <ProviderCard id="google" title="Google" desc="Gemini via API key" />
                     <ProviderCard id="ollama" title="Ollama" desc="Local models via REST API" />
                   </div>
                 </div>
@@ -733,12 +958,12 @@ export function Settings(props: SettingsProps) {
                           />
                         </label>
                       </div>
-                      <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3">
-                        <div>
+                      <div className="mt-3 flex items-start justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3">
+                        <div className="min-w-0">
                           <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">
                             RECYCLE
                           </div>
-                          <div className="mt-1 text-[11px] text-text-secondary">
+                          <div className="mt-1 break-words text-[11px] text-text-secondary">
                             Keep shells warm between sessions for faster startup.
                           </div>
                         </div>
@@ -939,12 +1164,12 @@ export function Settings(props: SettingsProps) {
 
                     <div className="rounded-2xl border border-border bg-bg-secondary p-4">
                       <div className="text-sm font-semibold">Focus</div>
-                      <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3">
-                        <div>
+                      <div className="mt-3 flex items-start justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3">
+                        <div className="min-w-0">
                           <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">
                             DIM UNFOCUSED
                           </div>
-                          <div className="mt-1 text-[11px] text-text-secondary">
+                          <div className="mt-1 break-words text-[11px] text-text-secondary">
                             When in terminal mode, reduce opacity for other panes.
                           </div>
                         </div>
@@ -991,26 +1216,19 @@ export function Settings(props: SettingsProps) {
                     <div className="rounded-2xl border border-border bg-bg-secondary p-4">
                       <div className="text-sm font-semibold">Toggles</div>
                       <div className="mt-3 space-y-2">
-                        {(
-                          [
-                            ["taskCompleted", "Task completed"],
-                            ["agentError", "Agent error"],
-                            ["mergeConflict", "Merge conflict"],
-                            ["reviewReady", "Review ready"],
-                          ] as const
-                        ).map(([k, label]) => (
+                        {NOTIFICATION_TOGGLES.map(({ key, label }) => (
                           <label
-                            key={k}
-                            className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3 text-xs hover:bg-bg-hover"
+                            key={key}
+                            className="flex cursor-pointer items-start justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3 text-xs hover:bg-bg-hover"
                           >
-                            <span className="text-text-primary">{label}</span>
+                            <span className="min-w-0 break-words text-text-primary">{label}</span>
                             <input
                               type="checkbox"
-                              checked={(s.notifications as any)[k] as boolean}
+                              checked={s.notifications[key]}
                               onChange={(e) =>
                                 setDraftAndSave({
                                   ...s,
-                                  notifications: { ...s.notifications, [k]: e.target.checked } as any,
+                                  notifications: { ...s.notifications, [key]: e.target.checked },
                                 })
                               }
                             />
@@ -1102,8 +1320,8 @@ export function Settings(props: SettingsProps) {
                             <option value="rebase">rebase</option>
                           </select>
                         </label>
-                        <label className="flex cursor-pointer items-center justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3 text-xs hover:bg-bg-hover">
-                          <span className="text-text-primary">Auto-delegate conflicts</span>
+                        <label className="flex cursor-pointer items-start justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3 text-xs hover:bg-bg-hover">
+                          <span className="min-w-0 break-words text-text-primary">Auto-delegate conflicts</span>
                           <input
                             type="checkbox"
                             checked={s.git.autoDelegateConflicts}
@@ -1159,12 +1377,12 @@ export function Settings(props: SettingsProps) {
                   <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
                     <div className="rounded-2xl border border-border bg-bg-secondary p-4">
                       <div className="text-sm font-semibold">Auto-Save</div>
-                      <div className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3">
-                        <div>
+                      <div className="mt-3 flex items-start justify-between gap-2 rounded-xl border border-border bg-bg-tertiary px-3 py-3">
+                        <div className="min-w-0">
                           <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">
                             ENABLED
                           </div>
-                          <div className="mt-1 text-[11px] text-text-secondary">
+                          <div className="mt-1 break-words text-[11px] text-text-secondary">
                             Saves layout snapshots for crash recovery.
                           </div>
                         </div>
@@ -1198,7 +1416,7 @@ export function Settings(props: SettingsProps) {
                         </label>
                       </div>
                       <div className="mt-3 rounded-xl border border-border bg-bg-tertiary px-3 py-3 text-[11px] text-text-secondary">
-                        Snapshot files live in <span className="font-mono">~/.config/synk/sessions/</span>.
+                        Snapshot files live in <span className="break-all font-mono">~/.config/synk/sessions/</span>.
                       </div>
                     </div>
                   </div>
@@ -1215,13 +1433,13 @@ export function Settings(props: SettingsProps) {
                       <div className="text-sm font-semibold">Storage</div>
                       <div className="mt-3 rounded-xl border border-border bg-bg-tertiary px-3 py-3 text-[12px] text-text-secondary">
                         <div>
-                          Global: <span className="font-mono">~/.config/synk/</span>
+                          Global: <span className="break-all font-mono">~/.config/synk/</span>
                         </div>
                         <div className="mt-1">
-                          Settings: <span className="font-mono">~/.config/synk/settings.json</span>
+                          Settings: <span className="break-all font-mono">~/.config/synk/settings.json</span>
                         </div>
                         <div className="mt-1">
-                          Sessions: <span className="font-mono">~/.config/synk/sessions/</span>
+                          Sessions: <span className="break-all font-mono">~/.config/synk/sessions/</span>
                         </div>
                       </div>
                     </div>

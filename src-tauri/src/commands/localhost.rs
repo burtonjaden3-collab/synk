@@ -67,10 +67,11 @@ pub fn localhost_session_list(
     args: LocalhostListArgs,
 ) -> std::result::Result<Vec<LocalhostSessionView>, String> {
     let project_path = Path::new(&args.project_path);
-    let guard = runtime.inner().lock().map_err(|_| "mutex poisoned".to_string())?;
-    guard
-        .list(&app, project_path)
-        .map_err(|e| format!("{e:#}"))
+    let guard = runtime
+        .inner()
+        .lock()
+        .map_err(|_| "mutex poisoned".to_string())?;
+    guard.list(&app, project_path).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -89,7 +90,10 @@ pub fn localhost_session_upsert(
     let project_path_str = spec.project_path.clone();
     let project_path = Path::new(&project_path_str);
 
-    let mut guard = runtime.inner().lock().map_err(|_| "mutex poisoned".to_string())?;
+    let mut guard = runtime
+        .inner()
+        .lock()
+        .map_err(|_| "mutex poisoned".to_string())?;
     guard
         .upsert_spec(&app, spec)
         .and_then(|_| guard.list(&app, project_path))
@@ -103,7 +107,10 @@ pub fn localhost_session_delete(
     args: LocalhostDeleteArgs,
 ) -> std::result::Result<Vec<LocalhostSessionView>, String> {
     let project_path = Path::new(&args.project_path);
-    let mut guard = runtime.inner().lock().map_err(|_| "mutex poisoned".to_string())?;
+    let mut guard = runtime
+        .inner()
+        .lock()
+        .map_err(|_| "mutex poisoned".to_string())?;
 
     // Best-effort: stop if running.
     let _ = guard.stop(app.clone(), &args.project_path, &args.id);
@@ -122,7 +129,10 @@ pub fn localhost_session_start(
 ) -> std::result::Result<LocalhostSessionView, String> {
     let project_path = Path::new(&args.project_path);
     let spec = {
-        let guard = runtime.inner().lock().map_err(|_| "mutex poisoned".to_string())?;
+        let guard = runtime
+            .inner()
+            .lock()
+            .map_err(|_| "mutex poisoned".to_string())?;
         guard
             .get_spec(&app, project_path, &args.id)
             .map_err(|e| format!("{e:#}"))?
@@ -131,7 +141,8 @@ pub fn localhost_session_start(
         return Err(format!("unknown localhost session id {}", args.id));
     };
 
-    LocalhostRuntime::start_with_runtime(runtime.inner().clone(), app, spec).map_err(|e| format!("{e:#}"))
+    LocalhostRuntime::start_with_runtime(runtime.inner().clone(), app, spec)
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -142,7 +153,10 @@ pub fn localhost_session_stop(
 ) -> std::result::Result<LocalhostSessionView, String> {
     let project_path = Path::new(&args.project_path);
     let spec = {
-        let guard = runtime.inner().lock().map_err(|_| "mutex poisoned".to_string())?;
+        let guard = runtime
+            .inner()
+            .lock()
+            .map_err(|_| "mutex poisoned".to_string())?;
         guard
             .get_spec(&app, project_path, &args.id)
             .map_err(|e| format!("{e:#}"))?
@@ -152,7 +166,10 @@ pub fn localhost_session_stop(
     };
 
     {
-        let mut guard = runtime.inner().lock().map_err(|_| "mutex poisoned".to_string())?;
+        let mut guard = runtime
+            .inner()
+            .lock()
+            .map_err(|_| "mutex poisoned".to_string())?;
         guard
             .stop(app.clone(), &args.project_path, &args.id)
             .map_err(|e| format!("{e:#}"))?;
@@ -177,7 +194,10 @@ pub fn localhost_session_restart(
 ) -> std::result::Result<LocalhostSessionView, String> {
     // Stop is best-effort.
     {
-        let mut guard = runtime.inner().lock().map_err(|_| "mutex poisoned".to_string())?;
+        let mut guard = runtime
+            .inner()
+            .lock()
+            .map_err(|_| "mutex poisoned".to_string())?;
         let _ = guard.stop(app.clone(), &args.project_path, &args.id);
     }
     localhost_session_start(app, runtime, args)
@@ -189,6 +209,9 @@ pub fn localhost_session_logs(
     runtime: tauri::State<'_, SharedLocalhostRuntime>,
     args: LocalhostIdArgs,
 ) -> std::result::Result<Vec<String>, String> {
-    let guard = runtime.inner().lock().map_err(|_| "mutex poisoned".to_string())?;
+    let guard = runtime
+        .inner()
+        .lock()
+        .map_err(|_| "mutex poisoned".to_string())?;
     Ok(guard.logs(&args.project_path, &args.id))
 }

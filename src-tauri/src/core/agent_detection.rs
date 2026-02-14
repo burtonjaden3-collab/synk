@@ -12,6 +12,7 @@ pub enum AgentType {
     ClaudeCode,
     GeminiCli,
     Codex,
+    Openrouter,
     Terminal,
 }
 
@@ -21,6 +22,7 @@ impl AgentType {
             AgentType::ClaudeCode => Some("claude"),
             AgentType::GeminiCli => Some("gemini"),
             AgentType::Codex => Some("codex"),
+            AgentType::Openrouter => Some("codex"),
             AgentType::Terminal => None,
         }
     }
@@ -30,6 +32,7 @@ impl AgentType {
             AgentType::ClaudeCode => "Claude Code",
             AgentType::GeminiCli => "Gemini CLI",
             AgentType::Codex => "OpenAI Codex",
+            AgentType::Openrouter => "OpenRouter",
             AgentType::Terminal => "Terminal",
         }
     }
@@ -42,6 +45,8 @@ pub struct DetectedAgent {
     pub command: String,
     pub found: bool,
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +67,7 @@ impl AgentRegistry {
                 command: shell,
                 found: true,
                 path: None,
+                version: None,
             },
         );
 
@@ -69,11 +75,17 @@ impl AgentRegistry {
             AgentType::ClaudeCode,
             AgentType::GeminiCli,
             AgentType::Codex,
+            AgentType::Openrouter,
         ] {
             let cmd = agent_type
                 .cli_command()
                 .expect("non-terminal agent has command");
             let path = which_like(cmd);
+            let version = if path.is_some() {
+                version_like(cmd)
+            } else {
+                None
+            };
             detected.insert(
                 agent_type,
                 DetectedAgent {
@@ -81,6 +93,7 @@ impl AgentRegistry {
                     command: cmd.to_string(),
                     found: path.is_some(),
                     path,
+                    version,
                 },
             );
         }
@@ -95,6 +108,7 @@ impl AgentRegistry {
             AgentType::ClaudeCode,
             AgentType::GeminiCli,
             AgentType::Codex,
+            AgentType::Openrouter,
             AgentType::Terminal,
         ] {
             if let Some(v) = self.detected.get(&t) {
@@ -127,6 +141,24 @@ fn which_like(cmd: &str) -> Option<String> {
     // `which` and `where` can output multiple matches; take the first.
     let stdout = String::from_utf8_lossy(&output.stdout);
     let first = stdout.lines().next()?.trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.to_string())
+    }
+}
+
+fn version_like(cmd: &str) -> Option<String> {
+    let output = Command::new(cmd).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    if text.trim().is_empty() {
+        text = String::from_utf8_lossy(&output.stderr).to_string();
+    }
+    let first = text.lines().next()?.trim();
     if first.is_empty() {
         None
     } else {

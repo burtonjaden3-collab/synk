@@ -98,6 +98,7 @@ export function LocalhostSessions(props: { tauriAvailable: boolean; projectPath:
 
     let unlistenLog: null | (() => void) = null;
     let unlistenStatus: null | (() => void) = null;
+    let disposed = false;
 
     onLocalhostSessionLog((ev) => {
       if (ev.projectPath !== projectPath) return;
@@ -109,7 +110,11 @@ export function LocalhostSessions(props: { tauriAvailable: boolean; projectPath:
         return next;
       });
     }).then((fn) => {
-      unlistenLog = fn;
+      if (disposed) {
+        fn();
+      } else {
+        unlistenLog = fn;
+      }
     });
 
     onLocalhostSessionStatus((ev) => {
@@ -129,10 +134,15 @@ export function LocalhostSessions(props: { tauriAvailable: boolean; projectPath:
         ),
       );
     }).then((fn) => {
-      unlistenStatus = fn;
+      if (disposed) {
+        fn();
+      } else {
+        unlistenStatus = fn;
+      }
     });
 
     return () => {
+      disposed = true;
       unlistenLog?.();
       unlistenStatus?.();
     };

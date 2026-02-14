@@ -1,7 +1,9 @@
 use tauri::State;
 
 use crate::core::process_pool::{PoolConfig, ProcessPool, SharedProcessPool};
-use crate::core::settings::{ProviderKeyValidationResult, ProviderModelsResult, SettingsView};
+use crate::core::settings::{
+    OllamaPullResult, ProviderKeyValidationResult, ProviderModelsResult, SettingsView,
+};
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +22,15 @@ pub struct ProviderValidateArgs {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelsArgs {
     pub provider: String,
-    pub api_key: String,
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllamaPullArgs {
+    pub model: String,
+    pub base_url: Option<String>,
 }
 
 #[tauri::command]
@@ -57,6 +67,18 @@ pub fn settings_validate_provider_key(
 pub fn settings_list_provider_models(
     args: ProviderModelsArgs,
 ) -> std::result::Result<ProviderModelsResult, String> {
-    crate::core::settings::list_provider_models(&args.provider, &args.api_key)
+    crate::core::settings::list_provider_models(
+        &args.provider,
+        args.api_key.as_deref().unwrap_or(""),
+        args.base_url.as_deref(),
+    )
+    .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+pub fn settings_ollama_pull_model(
+    args: OllamaPullArgs,
+) -> std::result::Result<OllamaPullResult, String> {
+    crate::core::settings::pull_ollama_model(&args.model, args.base_url.as_deref())
         .map_err(|e| format!("{e:#}"))
 }

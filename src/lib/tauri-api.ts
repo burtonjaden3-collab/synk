@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import type {
   DetectedAgent,
+  CodexProvider,
   McpDiscoveryResult,
   ProjectConfigView,
   RecentProject,
@@ -19,6 +20,7 @@ import type {
   AppSettings,
   ProviderKeyValidationResult,
   ProviderModelsResult,
+  OllamaPullResult,
   SkillsDiscoveryResult,
   OnboardingScanResult,
   GitCreateWorktreeResponse,
@@ -118,9 +120,21 @@ export function sessionCd(sessionId: SessionId, dir: string, branch?: string | n
   return invoke<void>("session_cd", { args: { sessionId, dir, branch: branch ?? null } });
 }
 
-export function sessionRestart(sessionId: SessionId, dir: string, branch?: string | null, model?: string | null) {
+export function sessionRestart(
+  sessionId: SessionId,
+  dir: string,
+  branch?: string | null,
+  model?: string | null,
+  codexProvider?: CodexProvider | null,
+) {
   return invoke<SessionInfo>("session_restart", {
-    args: { sessionId, dir, branch: branch ?? null, model: model ?? null },
+    args: {
+      sessionId,
+      dir,
+      branch: branch ?? null,
+      model: model ?? null,
+      codexProvider: codexProvider ?? null,
+    },
   });
 }
 
@@ -374,9 +388,15 @@ export function settingsValidateProviderKey(provider: string, apiKey: string) {
   });
 }
 
-export function settingsListProviderModels(provider: string, apiKey: string) {
+export function settingsListProviderModels(provider: string, apiKey: string, baseUrl?: string | null) {
   return invoke<ProviderModelsResult>("settings_list_provider_models", {
-    args: { provider, apiKey },
+    args: { provider, apiKey, baseUrl: baseUrl ?? null },
+  });
+}
+
+export function settingsOllamaPullModel(model: string, baseUrl?: string | null) {
+  return invoke<OllamaPullResult>("settings_ollama_pull_model", {
+    args: { model, baseUrl: baseUrl ?? null },
   });
 }
 

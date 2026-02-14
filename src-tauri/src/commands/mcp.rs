@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use tauri::State;
 
+use crate::core::agent_detection::AgentType;
 use crate::core::mcp_discovery::{self, McpDiscoveryResult};
 use crate::core::mcp_server::SharedMcpRuntime;
-use crate::core::agent_detection::AgentType;
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,8 +36,8 @@ pub fn mcp_discover(
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from);
     let agent_type = args.agent_type.unwrap_or(AgentType::ClaudeCode);
-    let mut out =
-        mcp_discovery::discover_mcp_agent(agent_type, project_path.as_deref()).map_err(|e| format!("{e:#}"))?;
+    let mut out = mcp_discovery::discover_mcp_agent(agent_type, project_path.as_deref())
+        .map_err(|e| format!("{e:#}"))?;
 
     // Best-effort "starting" status for servers we recently spawned.
     let guard = runtime.lock().expect("mcp runtime mutex poisoned");

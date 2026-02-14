@@ -1,4 +1,4 @@
-import type { SessionInfo } from "../../lib/types";
+import type { AgentType, SessionInfo } from "../../lib/types";
 import type { InputMode } from "../../lib/keybindings";
 import { SessionPane } from "./SessionPane";
 
@@ -13,6 +13,8 @@ function gridForCount(count: number) {
 
 export function SessionGrid(props: {
   sessions: SessionInfo[];
+  agentVersions?: Partial<Record<AgentType, string | null>>;
+  fallbackModelForAgent?: (agentType: AgentType) => string | undefined;
   mode: InputMode;
   selectedSessionId: number | null;
   activeSessionId: number | null;
@@ -40,6 +42,8 @@ export function SessionGrid(props: {
         <SessionPane
           key={s.sessionId}
           session={s}
+          agentVersion={props.agentVersions?.[s.agentType] ?? null}
+          fallbackModel={props.fallbackModelForAgent?.(s.agentType) ?? null}
           mode={props.mode}
           selected={props.selectedSessionId === s.sessionId}
           active={props.activeSessionId === s.sessionId}

@@ -58,6 +58,7 @@
             "settings_set",
             "settings_validate_provider_key",
             "settings_list_provider_models",
+            "settings_ollama_pull_model",
             "debug_pool_stats",
             "debug_pool_roundtrip"
           ],

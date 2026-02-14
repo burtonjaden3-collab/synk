@@ -7,11 +7,12 @@ use crate::commands::git::{
     git_branches, git_cleanup_orphans, git_create_worktree, git_delete_worktree,
     git_detect_orphans, git_ensure_worktree, git_list_worktrees, git_remove_worktree,
 };
-use crate::commands::mcp::{mcp_discover, mcp_set_enabled};
 use crate::commands::localhost::{
-    localhost_session_delete, localhost_session_list, localhost_session_logs, localhost_session_restart,
-    localhost_session_start, localhost_session_stop, localhost_session_upsert,
+    localhost_session_delete, localhost_session_list, localhost_session_logs,
+    localhost_session_restart, localhost_session_start, localhost_session_stop,
+    localhost_session_upsert,
 };
+use crate::commands::mcp::{mcp_discover, mcp_set_enabled};
 use crate::commands::onboarding::{
     onboarding_initialize, onboarding_is_first_run, onboarding_scan,
 };
@@ -28,11 +29,12 @@ use crate::commands::review::{
     review_resolve_comment, review_set_decision, review_set_merge_strategy, review_set_status,
 };
 use crate::commands::session::{
-    session_cd, session_create, session_destroy, session_list, session_resize,
-    session_restart, session_scrollback, session_write,
+    session_cd, session_create, session_destroy, session_list, session_resize, session_restart,
+    session_scrollback, session_write,
 };
 use crate::commands::settings::{
-    settings_get, settings_list_provider_models, settings_set, settings_validate_provider_key,
+    settings_get, settings_list_provider_models, settings_ollama_pull_model, settings_set,
+    settings_validate_provider_key,
 };
 use crate::commands::skills::{skills_discover, skills_set_enabled};
 use crate::core::agent_detection::{AgentRegistry, SharedAgentRegistry};
@@ -117,6 +119,7 @@ pub fn run() {
             settings_set,
             settings_validate_provider_key,
             settings_list_provider_models,
+            settings_ollama_pull_model,
             skills_discover,
             skills_set_enabled,
             mcp_discover,
@@ -159,7 +162,7 @@ pub fn run() {
         .expect("error while building tauri application");
 
     // Load settings and apply pool config before warmup so warmup uses the user's config.
-    if let Ok(settings) = core_settings::settings_get(&app.handle()) {
+    if let Ok(settings) = core_settings::settings_get(app.handle()) {
         let cfg = core_settings::pool_config_from_settings(&settings);
         ProcessPool::reconfigure(pool.clone(), cfg);
     }

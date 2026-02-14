@@ -207,13 +207,7 @@ pub fn git_merge(
     if !res.success && settings.git.auto_delegate_conflicts {
         if let Some(files) = res.conflict_files.as_deref() {
             let mut guard = sessions.lock().expect("session manager mutex poisoned");
-            maybe_delegate_conflicts(
-                &mut guard,
-                &args.project_path,
-                &branch,
-                &base_branch,
-                files,
-            );
+            maybe_delegate_conflicts(&mut guard, &args.project_path, &branch, &base_branch, files);
         }
     }
 

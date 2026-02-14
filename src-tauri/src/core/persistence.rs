@@ -302,18 +302,18 @@ pub fn project_session_config_set(
 ) -> Result<()> {
     let mut root = read_project_config_value(project_path)?;
 
-    if !root.get("version").is_some() {
+    if root.get("version").is_none() {
         root["version"] = Value::Number(1.into());
     }
 
-    if !root.get("project_path").is_some() {
+    if root.get("project_path").is_none() {
         root["project_path"] = Value::String(project_path.to_string_lossy().to_string());
     }
-    if !root.get("project_name").is_some() {
+    if root.get("project_name").is_none() {
         root["project_name"] = Value::String(project_name_from_path(project_path));
     }
 
-    if !root.get("sessions").is_some() || !root["sessions"].is_object() {
+    if root.get("sessions").is_none() || !root["sessions"].is_object() {
         root["sessions"] = Value::Object(Default::default());
     }
 

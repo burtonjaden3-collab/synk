@@ -117,7 +117,10 @@ fn project_slug(project_path: &Path) -> String {
 fn sessions_path(app: &tauri::AppHandle, project_path: &Path) -> Result<PathBuf> {
     let project = project_slug(project_path);
     app.path()
-        .resolve(format!("synk/localhost/{project}/sessions.json"), BaseDirectory::Config)
+        .resolve(
+            format!("synk/localhost/{project}/sessions.json"),
+            BaseDirectory::Config,
+        )
         .context("resolve localhost sessions path")
 }
 
@@ -139,7 +142,11 @@ fn load_specs(app: &tauri::AppHandle, project_path: &Path) -> Result<Vec<Localho
     Ok(parsed)
 }
 
-fn save_specs(app: &tauri::AppHandle, project_path: &Path, specs: &[LocalhostSessionSpec]) -> Result<()> {
+fn save_specs(
+    app: &tauri::AppHandle,
+    project_path: &Path,
+    specs: &[LocalhostSessionSpec],
+) -> Result<()> {
     let path = sessions_path(app, project_path)?;
     ensure_parent(&path)?;
     let text = serde_json::to_string_pretty(specs).context("serialize localhost sessions")?;
@@ -333,7 +340,12 @@ impl LocalhostRuntime {
         let key = rt_key(project_path, id);
         self.running
             .get(&key)
-            .map(|r| matches!(r.status, LocalhostSessionStatus::Starting | LocalhostSessionStatus::Running))
+            .map(|r| {
+                matches!(
+                    r.status,
+                    LocalhostSessionStatus::Starting | LocalhostSessionStatus::Running
+                )
+            })
             .unwrap_or(false)
     }
 
@@ -488,7 +500,13 @@ impl LocalhostRuntime {
     }
 }
 
-fn push_log(runtime: &SharedLocalhostRuntime, app: &tauri::AppHandle, spec: &LocalhostSessionSpec, stream: &str, line: &str) {
+fn push_log(
+    runtime: &SharedLocalhostRuntime,
+    app: &tauri::AppHandle,
+    spec: &LocalhostSessionSpec,
+    stream: &str,
+    line: &str,
+) {
     let key = rt_key(&spec.project_path, &spec.id);
     if let Ok(mut guard) = runtime.lock() {
         if let Some(r) = guard.running.get_mut(&key) {
@@ -550,7 +568,11 @@ fn set_status(
     );
 }
 
-fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle, spec: LocalhostSessionSpec) -> Result<()> {
+fn run_localhost_session(
+    runtime: SharedLocalhostRuntime,
+    app: tauri::AppHandle,
+    spec: LocalhostSessionSpec,
+) -> Result<()> {
     let working_dir = PathBuf::from(&spec.working_dir);
     let port = {
         let guard = runtime.lock().expect("localhost runtime mutex poisoned");
@@ -581,7 +603,13 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
 
         let mut child = cmd.spawn().context("spawn npm install")?;
         let pid = child.id();
-        push_log(&runtime, &app, &spec, "stdout", &format!("[synk] npm install pid={pid}"));
+        push_log(
+            &runtime,
+            &app,
+            &spec,
+            "stdout",
+            &format!("[synk] npm install pid={pid}"),
+        );
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -592,7 +620,7 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
             let spec2 = spec.clone();
             thread::spawn(move || {
                 let reader = BufReader::new(out);
-                for line in reader.lines().flatten() {
+                for line in reader.lines().map_while(Result::ok) {
                     push_log(&runtime2, &app2, &spec2, "stdout", &line);
                 }
             });
@@ -603,7 +631,7 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
             let spec2 = spec.clone();
             thread::spawn(move || {
                 let reader = BufReader::new(err);
-                for line in reader.lines().flatten() {
+                for line in reader.lines().map_while(Result::ok) {
                     push_log(&runtime2, &app2, &spec2, "stderr", &line);
                 }
             });
@@ -613,7 +641,13 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
         if !status.success() {
             return Err(anyhow!("npm install failed with {status}"));
         }
-        push_log(&runtime, &app, &spec, "stdout", "[synk] npm install complete");
+        push_log(
+            &runtime,
+            &app,
+            &spec,
+            "stdout",
+            "[synk] npm install complete",
+        );
     }
 
     let mut envs = HashMap::<String, String>::new();
@@ -662,7 +696,13 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
     };
 
     let pid = child.id();
-    push_log(&runtime, &app, &spec, "stdout", &format!("[synk] started pid={pid} ({cmdline})"));
+    push_log(
+        &runtime,
+        &app,
+        &spec,
+        "stdout",
+        &format!("[synk] started pid={pid} ({cmdline})"),
+    );
 
     // Store child handle/cmdline + pid.
     let (stdout, stderr) = {
@@ -680,7 +720,14 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
         }
         (stdout, stderr)
     };
-    set_status(&runtime, &app, &spec, LocalhostSessionStatus::Starting, Some(pid), None);
+    set_status(
+        &runtime,
+        &app,
+        &spec,
+        LocalhostSessionStatus::Starting,
+        Some(pid),
+        None,
+    );
 
     if let Some(out) = stdout {
         let runtime2 = runtime.clone();
@@ -688,7 +735,7 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
         let spec2 = spec.clone();
         thread::spawn(move || {
             let reader = BufReader::new(out);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 push_log(&runtime2, &app2, &spec2, "stdout", &line);
             }
         });
@@ -699,7 +746,7 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
         let spec2 = spec.clone();
         thread::spawn(move || {
             let reader = BufReader::new(err);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 push_log(&runtime2, &app2, &spec2, "stderr", &line);
             }
         });
@@ -707,7 +754,14 @@ fn run_localhost_session(runtime: SharedLocalhostRuntime, app: tauri::AppHandle,
 
     // Wait until the server responds before flipping to "running".
     if wait_for_port(port, Duration::from_secs(25)) {
-        set_status(&runtime, &app, &spec, LocalhostSessionStatus::Running, Some(pid), None);
+        set_status(
+            &runtime,
+            &app,
+            &spec,
+            LocalhostSessionStatus::Running,
+            Some(pid),
+            None,
+        );
     }
 
     // Monitor exit.

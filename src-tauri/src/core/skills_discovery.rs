@@ -70,6 +70,48 @@ fn read_text_if_exists(path: &Path) -> Result<Option<String>> {
     }
 }
 
+fn expand_home_prefix(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Ok(home) = home_dir() {
+            return home;
+        }
+        return PathBuf::from(path);
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+fn normalized_skill_path_key(path: &str) -> String {
+    let expanded = expand_home_prefix(path);
+    // Prefer canonical paths for de-dupe so symlinked skill roots don't inflate counts.
+    fs::canonicalize(&expanded)
+        .unwrap_or(expanded)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn skill_exists_on_disk(path: &str) -> bool {
+    fs::metadata(expand_home_prefix(path)).is_ok()
+}
+
+fn claude_skill_config_path(path: &str) -> String {
+    let p = Path::new(path);
+    let is_skill_md = p
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("SKILL.md"));
+    if !is_skill_md {
+        return path.to_string();
+    }
+    p.parent()
+        .map(|pp| pp.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string())
+}
+
 fn skill_description_from_skill_md(text: &str) -> Option<String> {
     // Heuristic: take the first non-empty, non-heading line as a short description.
     // If there isn't one, fall back to the first heading.
@@ -122,7 +164,7 @@ fn parse_settings_installed_skills(settings_json: &Value) -> Vec<SkillInfo> {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let exists = (!path.is_empty()) && fs::metadata(&path).is_ok();
+        let exists = (!path.is_empty()) && skill_exists_on_disk(&path);
 
         out.push(SkillInfo {
             name: name.to_string(),
@@ -137,44 +179,11 @@ fn parse_settings_installed_skills(settings_json: &Value) -> Vec<SkillInfo> {
     out
 }
 
-fn scan_skills_directory() -> Result<Vec<SkillInfo>> {
-    let dir = skills_dir()?;
+fn scan_skills_directory_roots(roots: &[PathBuf]) -> Result<Vec<SkillInfo>> {
     let mut out = Vec::new();
-    let entries = match fs::read_dir(&dir) {
-        Ok(v) => v,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-        Err(e) => return Err(e).with_context(|| format!("read_dir {}", dir.display())),
-    };
-
-    for entry in entries {
-        let entry = entry.with_context(|| format!("read_dir entry for {}", dir.display()))?;
-        let meta = entry
-            .metadata()
-            .with_context(|| format!("metadata {}", entry.path().display()))?;
-        if !meta.is_dir() {
-            continue;
-        }
-        let path = entry.path();
-        let name = match path.file_name().and_then(|s| s.to_str()) {
-            Some(v) if !v.is_empty() => v.to_string(),
-            _ => continue,
-        };
-
-        let desc = read_text_if_exists(&path.join("SKILL.md"))?
-            .and_then(|t| skill_description_from_skill_md(&t));
-
-        out.push(SkillInfo {
-            name,
-            path: path.to_string_lossy().to_string(),
-            // Match Claude Code's practical behavior: skills present on disk are treated as enabled
-            // unless explicitly disabled in settings.json (which is represented via the settings source).
-            enabled: true,
-            description: desc,
-            source: "directory".to_string(),
-            exists: true,
-        });
+    for root in roots {
+        out.extend(scan_skills_by_skill_md(root)?);
     }
-
     Ok(out)
 }
 
@@ -197,13 +206,6 @@ fn codex_skill_name_from_path(path: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or(path)
         .to_string()
-}
-
-fn scan_codex_skills_directory() -> Result<Vec<SkillInfo>> {
-    // For Codex, treat any SKILL.md under ~/.codex/skills (including .system/*) as a skill.
-    // This matches how Codex surfaces system skills + user-installed skills.
-    let dir = codex_skills_dir()?;
-    scan_skills_by_skill_md(&dir)
 }
 
 fn scan_project_recommended(project_path: &Path) -> Result<Vec<String>> {
@@ -235,8 +237,7 @@ fn scan_project_recommended(project_path: &Path) -> Result<Vec<String>> {
             // Split on whitespace/punct; last token is likely the skill name.
             let candidate = before
                 .split(|c: char| c.is_whitespace() || c == '`' || c == '"' || c == '\'' || c == '*')
-                .filter(|s| !s.is_empty())
-                .last()
+                .rfind(|s| !s.is_empty())
                 .unwrap_or("");
             let candidate = candidate
                 .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
@@ -259,16 +260,35 @@ fn discover_claude_skills(project_path: Option<&Path>) -> Result<SkillsDiscovery
         }
     }
 
-    // Merge in directory scan (fallback / discover missing).
-    let dir_skills = scan_skills_directory()?;
-    let mut seen = BTreeSet::<String>::new();
-    for s in installed.iter() {
-        seen.insert(s.name.clone());
+    // Merge in direct on-disk Claude skills to pick up newly added local skills.
+    let dir_skills = scan_skills_directory_roots(&[skills_dir()?])?
+        .into_iter()
+        .map(|mut s| {
+            s.path = claude_skill_config_path(&s.path);
+            s
+        })
+        .collect::<Vec<_>>();
+
+    let mut by_name = std::collections::HashMap::<String, usize>::new();
+    for (idx, s) in installed.iter().enumerate() {
+        by_name.insert(s.name.clone(), idx);
     }
     for s in dir_skills {
-        if seen.contains(&s.name) {
+        if let Some(idx) = by_name.get(&s.name).copied() {
+            let cur = installed
+                .get_mut(idx)
+                .expect("existing index should always be valid");
+            // If settings has a stale path for this skill, prefer the live on-disk path.
+            if !cur.exists && s.exists {
+                cur.path = s.path.clone();
+                cur.exists = true;
+            }
+            if cur.description.is_none() {
+                cur.description = s.description.clone();
+            }
             continue;
         }
+        by_name.insert(s.name.clone(), installed.len());
         installed.push(s);
     }
 
@@ -310,8 +330,9 @@ fn parse_codex_config_installed_skills(doc: &DocumentMut) -> Vec<SkillInfo> {
         let enabled = tbl.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
         let name = codex_skill_name_from_path(&path);
 
-        let exists = fs::metadata(&path).is_ok();
-        let desc = read_text_if_exists(Path::new(&path))
+        let expanded = expand_home_prefix(&path);
+        let exists = fs::metadata(&expanded).is_ok();
+        let desc = read_text_if_exists(&expanded)
             .ok()
             .flatten()
             .and_then(|t| skill_description_from_skill_md(&t));
@@ -355,7 +376,7 @@ fn scan_skills_by_skill_md(root: &Path) -> Result<Vec<SkillInfo>> {
         }
 
         let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        if fname != "SKILL.md" {
+        if !fname.eq_ignore_ascii_case("SKILL.md") {
             continue;
         }
 
@@ -386,31 +407,31 @@ fn discover_codex_skills() -> Result<SkillsDiscoveryResult> {
     let config_path = codex_config_path()?;
     let mut installed: Vec<SkillInfo> = Vec::new();
 
-    // 1) Discover actual installed skills on disk (Codex home + ~/.agents skills).
-    installed.extend(scan_codex_skills_directory()?);
-    // Support "agent skills" shared via ~/.agents (common in Codex setups).
-    installed.extend(scan_skills_by_skill_md(&home_dir()?.join(".agents").join("skills"))?);
-
-    // De-dupe by path (not name) since names can collide.
-    let mut seen_paths = BTreeSet::<String>::new();
-    installed.retain(|s| seen_paths.insert(s.path.clone()));
-
-    // 2) Apply config.toml overrides (enabled/disabled), but only when the path matches
-    // a skill that actually exists on disk. This avoids stale config entries showing up
-    // as "installed but disabled" (which doesn't match `codex`'s `/skills` UX).
+    // Source of truth: when Codex has explicit skills.config entries, use those.
+    // This keeps the Skills tab fully centralized under provider config.
     if let Some(text) = read_text_if_exists(&config_path)? {
         if let Ok(doc) = text.parse::<DocumentMut>() {
-            let overrides = parse_codex_config_installed_skills(&doc);
-            let mut by_path = std::collections::HashMap::<String, bool>::new();
-            for o in overrides {
-                by_path.insert(o.path, o.enabled);
-            }
-            for s in installed.iter_mut() {
-                if let Some(v) = by_path.get(&s.path) {
-                    s.enabled = *v;
-                    s.source = "config".to_string();
-                }
-            }
+            installed = parse_codex_config_installed_skills(&doc);
+        }
+    }
+
+    // Fallback: if config has no explicit list, surface Codex-local skills on disk.
+    if installed.is_empty() {
+        installed.extend(scan_skills_directory_roots(&[codex_skills_dir()?])?);
+    }
+
+    // De-dupe by normalized path (not name) since names can collide.
+    let mut seen_paths = BTreeSet::<String>::new();
+    installed.retain(|s| {
+        let key = normalized_skill_path_key(&s.path);
+        seen_paths.insert(key)
+    });
+
+    // For config-backed lists, keep source stable in UI.
+    let has_config_backing = installed.iter().any(|s| s.source == "config");
+    if has_config_backing {
+        for s in installed.iter_mut() {
+            s.source = "config".to_string();
         }
     }
 
@@ -423,10 +444,13 @@ fn discover_codex_skills() -> Result<SkillsDiscoveryResult> {
     })
 }
 
-pub fn discover_skills(agent_type: AgentType, project_path: Option<&Path>) -> Result<SkillsDiscoveryResult> {
+pub fn discover_skills(
+    agent_type: AgentType,
+    project_path: Option<&Path>,
+) -> Result<SkillsDiscoveryResult> {
     match agent_type {
         AgentType::ClaudeCode => discover_claude_skills(project_path),
-        AgentType::Codex => discover_codex_skills(),
+        AgentType::Codex | AgentType::Openrouter => discover_codex_skills(),
         // Gemini/Terminal don't have a wired "skills" integration yet; return empty.
         _ => Ok(SkillsDiscoveryResult {
             installed: Vec::new(),
@@ -458,10 +482,10 @@ pub fn set_skill_enabled(
     }
 
     // Ensure skills.installed exists and is an array.
-    if !root.get("skills").is_some() {
+    if root.get("skills").is_none() {
         root["skills"] = Value::Object(Default::default());
     }
-    if !root["skills"].get("installed").is_some() {
+    if root["skills"].get("installed").is_none() {
         root["skills"]["installed"] = Value::Array(Vec::new());
     }
     if !root["skills"]["installed"].is_array() {
@@ -471,6 +495,8 @@ pub fn set_skill_enabled(
     let installed = root["skills"]["installed"]
         .as_array_mut()
         .expect("installed is array");
+
+    let normalized_path = path.map(claude_skill_config_path);
 
     let mut found = false;
     for item in installed.iter_mut() {
@@ -484,7 +510,7 @@ pub fn set_skill_enabled(
             continue;
         }
         obj.insert("enabled".to_string(), Value::Bool(enabled));
-        if let Some(p) = path {
+        if let Some(p) = normalized_path.as_deref() {
             obj.insert("path".to_string(), Value::String(p.to_string()));
         }
         if let Some(d) = description {
@@ -495,7 +521,7 @@ pub fn set_skill_enabled(
     }
 
     if !found {
-        let default_path = path.map(|s| s.to_string()).unwrap_or_else(|| {
+        let default_path = normalized_path.unwrap_or_else(|| {
             skills_dir()
                 .map(|d| d.join(name))
                 .unwrap_or_default()
@@ -525,7 +551,9 @@ fn set_codex_skill_enabled(path: &str, enabled: bool) -> Result<()> {
     }
 
     let mut doc: DocumentMut = match read_text_if_exists(&config_path)? {
-        Some(text) => text.parse::<DocumentMut>().unwrap_or_else(|_| DocumentMut::new()),
+        Some(text) => text
+            .parse::<DocumentMut>()
+            .unwrap_or_else(|_| DocumentMut::new()),
         None => DocumentMut::new(),
     };
 
@@ -543,12 +571,13 @@ fn set_codex_skill_enabled(path: &str, enabled: bool) -> Result<()> {
         .as_array_of_tables_mut()
         .ok_or_else(|| anyhow::anyhow!("skills.config is not an array-of-tables"))?;
 
+    let target_key = normalized_skill_path_key(path);
     let mut found = false;
     for tbl in arr.iter_mut() {
         let Some(p) = tbl.get("path").and_then(|v| v.as_str()) else {
             continue;
         };
-        if p == path {
+        if normalized_skill_path_key(p) == target_key {
             tbl["enabled"] = Item::Value(TomlValue::from(enabled));
             found = true;
             break;
@@ -576,7 +605,7 @@ pub fn set_skill_enabled_for_agent(
 ) -> Result<()> {
     match agent_type {
         AgentType::ClaudeCode => set_skill_enabled(name, enabled, path, description),
-        AgentType::Codex => {
+        AgentType::Codex | AgentType::Openrouter => {
             let Some(p) = path else {
                 anyhow::bail!("codex skill toggles require a path");
             };

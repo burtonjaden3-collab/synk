@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isTauri } from "@tauri-apps/api/core";
 
@@ -20,6 +20,7 @@ import {
 } from "../../lib/tauri-api";
 import type {
   AgentType,
+  CodexProvider,
   DetectedAgent,
   OrchestrationMode,
   RecentProject,
@@ -75,6 +76,27 @@ export function Workspace() {
   const autosaveDebounceRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const restoreRunIdRef = useRef(0);
+  const keyHandlerStateRef = useRef<{
+    orderedSessions: SessionInfo[];
+    mode: InputMode;
+    selectedSessionId: number | null;
+    activeSessionId: number | null;
+    busy: boolean;
+    currentProjectName: string | null;
+    effectiveProjectPath: string;
+    exitMethod: "double_escape" | "ctrl_backslash" | "ctrl_shift_escape";
+    doubleEscapeTimeoutMs: number;
+  }>({
+    orderedSessions: [],
+    mode: "navigation",
+    selectedSessionId: null,
+    activeSessionId: null,
+    busy: false,
+    currentProjectName: null,
+    effectiveProjectPath: ".",
+    exitMethod: "double_escape",
+    doubleEscapeTimeoutMs: 300,
+  });
 
   useEffect(() => {
     mountedRef.current = true;
@@ -83,15 +105,43 @@ export function Workspace() {
     };
   }, []);
 
-  const refreshSessions = async () => {
+  const refreshSessions = useCallback(async () => {
     const list = await sessionList();
     setSessions(list);
-  };
+  }, []);
 
-  const refreshRecentProjects = async () => {
+  const refreshRecentProjects = useCallback(async () => {
     const list = await persistenceListRecentProjects();
     setRecentProjects(list);
-  };
+  }, []);
+
+  const sessionCreateCompat = useCallback(
+    async (args: {
+      agentType: AgentType;
+      projectPath: string;
+      branch?: string;
+      workingDir?: string;
+      model?: string;
+      codexProvider?: CodexProvider;
+    }) => {
+      try {
+        return await sessionCreate(args);
+      } catch (e) {
+        const msg = String(e ?? "");
+        const shouldFallback =
+          args.agentType === "openrouter" &&
+          (msg.includes("unknown variant `openrouter`") || msg.includes("expected one of"));
+        if (!shouldFallback) throw e;
+        // Compatibility for older backends: use codex runtime + OpenRouter provider override.
+        return sessionCreate({
+          ...args,
+          agentType: "codex",
+          codexProvider: "openrouter",
+        });
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!tauriAvailable) {
@@ -145,7 +195,19 @@ export function Workspace() {
   const dimUnfocused = settings?.ui?.dimUnfocusedPanes ?? true;
   const dimOpacity = settings?.ui?.unfocusedOpacity ?? 0.7;
   const sidebarWidth = settings?.ui?.sidebarWidth ?? 280;
-  const models = settings?.aiProviders ?? defaultAppSettings().aiProviders;
+  const models = useMemo(() => {
+    const defaults = defaultAppSettings().aiProviders;
+    const raw = (settings?.aiProviders ?? {}) as Partial<typeof defaults>;
+    return {
+      ...defaults,
+      ...raw,
+      anthropic: { ...defaults.anthropic, ...(raw.anthropic ?? {}) },
+      google: { ...defaults.google, ...(raw.google ?? {}) },
+      openai: { ...defaults.openai, ...(raw.openai ?? {}) },
+      openrouter: { ...defaults.openrouter, ...(raw.openrouter ?? {}) },
+      ollama: { ...defaults.ollama, ...(raw.ollama ?? {}) },
+    };
+  }, [settings?.aiProviders]);
 
   const modelForAgent = useMemo(() => {
     return (t: AgentType): string | undefined => {
@@ -156,12 +218,60 @@ export function Workspace() {
           return models.google.defaultModel || undefined;
         case "codex":
           return models.openai.defaultModel || undefined;
+        case "openrouter":
+          return models.openrouter.defaultModel || undefined;
         case "terminal":
         default:
           return undefined;
       }
     };
   }, [models]);
+
+  const agentVersions = useMemo(() => {
+    const out: Partial<Record<AgentType, string | null>> = {};
+    if (!detectedAgents) return out;
+    const codexVersion = detectedAgents.codex?.version ?? null;
+    for (const [k, v] of Object.entries(detectedAgents) as Array<[AgentType, DetectedAgent]>) {
+      out[k] = v.version ?? null;
+    }
+    if (!out.openrouter) {
+      out.openrouter = codexVersion;
+    }
+    return out;
+  }, [detectedAgents]);
+
+  const codexProviderForSelection = useMemo(
+    () =>
+      (t: AgentType): CodexProvider | undefined => {
+        if (t === "codex") return "openai";
+        return undefined;
+      },
+    [],
+  );
+
+  useEffect(() => {
+    keyHandlerStateRef.current = {
+      orderedSessions,
+      mode,
+      selectedSessionId,
+      activeSessionId,
+      busy,
+      currentProjectName: currentProject?.name ?? null,
+      effectiveProjectPath,
+      exitMethod,
+      doubleEscapeTimeoutMs,
+    };
+  }, [
+    orderedSessions,
+    mode,
+    selectedSessionId,
+    activeSessionId,
+    busy,
+    currentProject?.name,
+    effectiveProjectPath,
+    exitMethod,
+    doubleEscapeTimeoutMs,
+  ]);
 
   // If HomeScreen asked for a restore, do it immediately on entry.
   useEffect(() => {
@@ -198,12 +308,14 @@ export function Workspace() {
 
       const panes = [...snap.sessions].sort((a, b) => a.paneIndex - b.paneIndex);
       for (const p of panes) {
-        const resp = await sessionCreate({
+        const resp = await sessionCreateCompat({
           agentType: p.agentType,
           projectPath: snap.projectPath,
           branch: p.branch ?? undefined,
           workingDir: p.workingDir,
           model: modelForAgent(p.agentType),
+          codexProvider:
+            p.agentType === "codex" ? "openai" : p.agentType === "openrouter" ? "openrouter" : undefined,
         });
 
         // Persist per-pane config so SessionConfig panel reflects restored overrides.
@@ -342,13 +454,18 @@ export function Workspace() {
 
     let unlistenOutput: (() => void) | null = null;
     let unlistenExit: (() => void) | null = null;
+    let disposed = false;
 
     onSessionOutput((payload: SessionOutputEvent) => {
       const h = outputHandlersRef.current.get(payload.sessionId);
       if (!h) return;
       h(payload.dataB64);
     }).then((fn) => {
-      unlistenOutput = fn;
+      if (disposed) {
+        fn();
+      } else {
+        unlistenOutput = fn;
+      }
     });
 
     onSessionExit((payload: SessionExitEvent) => {
@@ -358,10 +475,15 @@ export function Workspace() {
       const h = outputHandlersRef.current.get(payload.sessionId);
       if (h) h(btoa(`\r\n[session exited: ${payload.exitCode}]\r\n`));
     }).then((fn) => {
-      unlistenExit = fn;
+      if (disposed) {
+        fn();
+      } else {
+        unlistenExit = fn;
+      }
     });
 
     return () => {
+      disposed = true;
       unlistenOutput?.();
       unlistenExit?.();
     };
@@ -371,6 +493,9 @@ export function Workspace() {
     if (!tauriAvailable) return;
 
     const handler = (e: KeyboardEvent) => {
+      const state = keyHandlerStateRef.current;
+      const ordered = state.orderedSessions;
+
       if (isSidebarToggle(e)) {
         if (isEditableTarget(e.target)) return;
         stopEvent(e);
@@ -378,7 +503,7 @@ export function Workspace() {
         return;
       }
 
-      if (orderedSessions.length === 0) return;
+      if (ordered.length === 0) return;
 
       // Always intercept Ctrl+b (reserved for future broadcast).
       if (e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "b") {
@@ -386,12 +511,12 @@ export function Workspace() {
         return;
       }
 
-      if (mode === "navigation") {
+      if (state.mode === "navigation") {
         if (isEditableTarget(e.target)) return;
 
         const idxFromNumber = keyToSessionIndex(e.key);
         if (idxFromNumber !== null) {
-          const next = idxFromNumber < orderedSessions.length ? orderedSessions[idxFromNumber] : null;
+          const next = idxFromNumber < ordered.length ? ordered[idxFromNumber] : null;
           if (next) {
             stopEvent(e);
             setSelectedSessionId(next.sessionId);
@@ -404,27 +529,27 @@ export function Workspace() {
           key === "h" ? "left" : key === "l" ? "right" : key === "k" ? "up" : key === "j" ? "down" : null;
         if (dir) {
           stopEvent(e);
-          const { cols } = gridForCount(orderedSessions.length);
+          const { cols } = gridForCount(ordered.length);
           const currentIndex = Math.max(
             0,
-            orderedSessions.findIndex((s) => s.sessionId === selectedSessionId),
+            ordered.findIndex((s) => s.sessionId === state.selectedSessionId),
           );
-          const nextIndex = moveIndex(currentIndex, dir, cols, orderedSessions.length);
-          setSelectedSessionId(orderedSessions[nextIndex].sessionId);
+          const nextIndex = moveIndex(currentIndex, dir, cols, ordered.length);
+          setSelectedSessionId(ordered[nextIndex].sessionId);
           return;
         }
 
         if (!e.ctrlKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "s") {
           stopEvent(e);
-          if (busy) return;
-          const suggested = currentProject?.name ? `${currentProject.name}-layout` : "session-layout";
+          if (state.busy) return;
+          const suggested = state.currentProjectName ? `${state.currentProjectName}-layout` : "session-layout";
           const name = window.prompt("Save session layout as:", suggested);
           if (!name) return;
 
           setError(null);
           setNotice(null);
           setBusy(true);
-          sessionSnapshotSaveNamed(effectiveProjectPath, name, orchestrationMode)
+          sessionSnapshotSaveNamed(state.effectiveProjectPath, name, orchestrationMode)
             .then((meta) => setNotice(`Saved session: ${meta.id} (${meta.layout})`))
             .catch((err) => setError(String(err)))
             .finally(() => setBusy(false));
@@ -433,7 +558,7 @@ export function Workspace() {
 
         if (e.key === "Enter") {
           stopEvent(e);
-          const sid = selectedSessionId ?? orderedSessions[0].sessionId;
+          const sid = state.selectedSessionId ?? ordered[0].sessionId;
           setSelectedSessionId(sid);
           setActiveSessionId(sid);
           setMode("terminal");
@@ -444,10 +569,10 @@ export function Workspace() {
       }
 
       // Terminal mode.
-      const sid = activeSessionId ?? selectedSessionId;
+      const sid = state.activeSessionId ?? state.selectedSessionId;
       if (!sid) return;
 
-      if (exitMethod === "ctrl_backslash" && e.ctrlKey && !e.altKey && !e.metaKey && e.key === "\\") {
+      if (state.exitMethod === "ctrl_backslash" && e.ctrlKey && !e.altKey && !e.metaKey && e.key === "\\") {
         stopEvent(e);
         setMode("navigation");
         setActiveSessionId(null);
@@ -455,7 +580,7 @@ export function Workspace() {
       }
 
       if (
-        exitMethod === "ctrl_shift_escape" &&
+        state.exitMethod === "ctrl_shift_escape" &&
         e.ctrlKey &&
         e.shiftKey &&
         !e.altKey &&
@@ -468,7 +593,7 @@ export function Workspace() {
         return;
       }
 
-      if (exitMethod === "double_escape" && e.key === "Escape") {
+      if (state.exitMethod === "double_escape" && e.key === "Escape") {
         stopEvent(e);
 
         if (escapeTimerRef.current !== null) {
@@ -482,7 +607,7 @@ export function Workspace() {
         escapeTimerRef.current = window.setTimeout(() => {
           escapeTimerRef.current = null;
           sessionWrite(sid, "\x1b").catch(() => {});
-        }, doubleEscapeTimeoutMs);
+        }, state.doubleEscapeTimeoutMs);
         return;
       }
 
@@ -509,21 +634,7 @@ export function Workspace() {
       }
       window.removeEventListener("keydown", handler, true);
     };
-  }, [
-    tauriAvailable,
-    orderedSessions,
-    mode,
-    selectedSessionId,
-    activeSessionId,
-    busy,
-    currentProject?.name,
-    effectiveProjectPath,
-    orchestrationMode,
-    autoSaveEnabled,
-    autoSaveIntervalMs,
-    exitMethod,
-    doubleEscapeTimeoutMs,
-  ]);
+  }, [tauriAvailable, refreshSessions, orchestrationMode]);
 
   const sessionCount = orderedSessions.length;
   const maxSessionsUi = settings?.performance?.maxActiveSessions ?? 12;
@@ -571,11 +682,18 @@ export function Workspace() {
             <option value="gemini_cli">
               gemini_cli{detectedAgents && !detectedAgents.gemini_cli?.found ? " (missing)" : ""}
             </option>
-            <option value="codex">
-              codex{detectedAgents && !detectedAgents.codex?.found ? " (missing)" : ""}
-            </option>
-          </select>
-        </label>
+              <option value="codex">
+                codex{detectedAgents && !detectedAgents.codex?.found ? " (missing)" : ""}
+              </option>
+              <option value="openrouter">
+                openrouter
+                {detectedAgents &&
+                !(detectedAgents.openrouter?.found ?? detectedAgents.codex?.found ?? false)
+                  ? " (needs codex CLI)"
+                  : ""}
+              </option>
+            </select>
+          </label>
         <button
           className="ml-2 h-9 rounded-lg border border-border bg-bg-primary px-3 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50"
           disabled={!tauriAvailable || !canAdd}
@@ -585,10 +703,11 @@ export function Workspace() {
             setNotice(null);
             setBusy(true);
             try {
-              const resp = await sessionCreate({
+              const resp = await sessionCreateCompat({
                 agentType,
                 projectPath: effectiveProjectPath,
                 model: modelForAgent(agentType),
+                codexProvider: codexProviderForSelection(agentType),
               });
               if (resp.warning) {
                 setNotice(resp.warning);
@@ -715,6 +834,8 @@ export function Workspace() {
             <div className="flex-1 overflow-hidden">
               <SessionGrid
                 sessions={orderedSessions}
+                agentVersions={agentVersions}
+                fallbackModelForAgent={modelForAgent}
                 mode={mode}
                 selectedSessionId={selectedSessionId}
                 activeSessionId={activeSessionId}

@@ -11,7 +11,6 @@ import {
   sessionSnapshotList,
 } from "../../lib/tauri-api";
 import { useAppStore } from "../../lib/store";
-import { DashboardStats } from "./DashboardStats";
 
 function baseName(path: string): string {
   // Keep it OS-agnostic; the backend treats paths as strings too.
@@ -36,7 +35,6 @@ export function HomeScreen() {
   const setCurrentProject = useAppStore((s) => s.setCurrentProject);
   const setPendingSessionRestoreId = useAppStore((s) => s.setPendingSessionRestoreId);
   const autoSaveEnabled = useAppStore((s) => s.settings?.session?.autoSave ?? true);
-  const setOnboardingOpen = useAppStore((s) => s.setOnboardingOpen);
 
   const tauriAvailable = useMemo(() => isTauri(), []);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
@@ -89,6 +87,7 @@ export function HomeScreen() {
       setCurrentProject(proj);
     } catch (e) {
       setError(String(e));
+    } finally {
       setBusy(false);
     }
   };
@@ -117,6 +116,7 @@ export function HomeScreen() {
       setPendingSessionRestoreId(snap.id);
     } catch (e) {
       setRestoreError(String(e));
+    } finally {
       setRestoreBusy(false);
     }
   };
@@ -149,20 +149,6 @@ export function HomeScreen() {
             </div>
           </div>
 
-          <div className="hidden items-center gap-2 md:flex">
-            <div className="rounded-full border border-border bg-bg-secondary px-3 py-1 text-[11px] font-semibold tracking-wide text-text-secondary">
-              Phase 1
-            </div>
-            <button
-              className="rounded-full border border-border bg-bg-secondary px-3 py-1 text-[11px] font-semibold tracking-wide text-text-secondary hover:bg-bg-hover disabled:opacity-60"
-              disabled={!tauriAvailable}
-              onClick={() => setOnboardingOpen(true)}
-              type="button"
-              title="Manually open the first-run onboarding wizard"
-            >
-              Run Onboarding
-            </button>
-          </div>
         </header>
 
         {error ? (
@@ -223,19 +209,7 @@ export function HomeScreen() {
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <button
-                  className="group relative overflow-hidden rounded-2xl border border-border bg-bg-tertiary p-4 text-left disabled:opacity-60"
-                  disabled
-                  title="Wizard ships in later phases"
-                >
-                  <div className="pointer-events-none absolute -right-24 -top-24 h-44 w-44 rounded-full bg-accent-purple/10 blur-2xl transition-transform duration-700 group-hover:rotate-12" />
-                  <div className="text-xs font-semibold text-text-primary">+ New Project</div>
-                  <div className="mt-1 text-xs text-text-secondary">
-                    Brainstorm wizard (coming soon)
-                  </div>
-                </button>
-
+              <div className="mt-4 grid grid-cols-1 gap-3">
                 <button
                   className="group relative overflow-hidden rounded-2xl border border-accent-blue/35 bg-bg-tertiary p-4 text-left shadow-[0_18px_45px_rgba(88,166,255,0.10)] disabled:opacity-60"
                   disabled={!tauriAvailable || busy}
@@ -273,13 +247,6 @@ export function HomeScreen() {
                     {busy ? "working..." : `cd ${baseName(recentProjects[0]?.path ?? "your-project")}`}
                   </div>
                 </button>
-              </div>
-
-              <div className="mt-4">
-                <div className="text-sm font-semibold">Dashboard</div>
-                <div className="mt-3">
-                  <DashboardStats />
-                </div>
               </div>
             </div>
           </section>

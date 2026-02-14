@@ -46,7 +46,7 @@ impl From<AuthModeView> for AuthModeDisk {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case", default)]
 pub struct ProviderAuthDisk {
     pub auth_mode: Option<AuthModeDisk>,
@@ -54,18 +54,6 @@ pub struct ProviderAuthDisk {
     pub oauth_connected: bool,
     pub oauth_email: Option<String>,
     pub default_model: String,
-}
-
-impl Default for ProviderAuthDisk {
-    fn default() -> Self {
-        Self {
-            auth_mode: None,
-            api_key: None,
-            oauth_connected: false,
-            oauth_email: None,
-            default_model: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +79,7 @@ pub struct AiProvidersDisk {
     pub anthropic: ProviderAuthDisk,
     pub google: ProviderAuthDisk,
     pub openai: ProviderAuthDisk,
+    pub openrouter: ProviderAuthDisk,
     pub ollama: OllamaDisk,
 }
 
@@ -99,7 +88,7 @@ impl Default for AiProvidersDisk {
         Self {
             default: "anthropic".to_string(),
             anthropic: ProviderAuthDisk {
-                auth_mode: Some(AuthModeDisk::Oauth),
+                auth_mode: Some(AuthModeDisk::ApiKey),
                 api_key: None,
                 oauth_connected: false,
                 oauth_email: None,
@@ -119,6 +108,13 @@ impl Default for AiProvidersDisk {
                 oauth_email: None,
                 // Used for Codex panes today (Codex CLI) and as the OpenAI default generally.
                 default_model: "gpt-5.3-codex".to_string(),
+            },
+            openrouter: ProviderAuthDisk {
+                auth_mode: Some(AuthModeDisk::ApiKey),
+                api_key: None,
+                oauth_connected: false,
+                oauth_email: None,
+                default_model: "openrouter/auto".to_string(),
             },
             ollama: OllamaDisk::default(),
         }
@@ -189,7 +185,6 @@ impl Default for UiDisk {
                 "cost".to_string(),
                 "git".to_string(),
                 "localhost".to_string(),
-                "tasks".to_string(),
                 "reviews".to_string(),
             ],
             show_session_cost_in_header: true,
@@ -296,7 +291,7 @@ pub struct SettingsDisk {
 impl Default for SettingsDisk {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             ai_providers: AiProvidersDisk::default(),
             performance: PerformanceDisk::default(),
             keyboard: KeyboardDisk::default(),
@@ -313,7 +308,7 @@ impl Default for SettingsDisk {
 // View schema (camelCase) for the frontend
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProviderAuthView {
     pub auth_mode: Option<AuthModeView>,
@@ -321,18 +316,6 @@ pub struct ProviderAuthView {
     pub oauth_connected: bool,
     pub oauth_email: Option<String>,
     pub default_model: String,
-}
-
-impl Default for ProviderAuthView {
-    fn default() -> Self {
-        Self {
-            auth_mode: None,
-            api_key: None,
-            oauth_connected: false,
-            oauth_email: None,
-            default_model: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,6 +341,7 @@ pub struct AiProvidersView {
     pub anthropic: ProviderAuthView,
     pub google: ProviderAuthView,
     pub openai: ProviderAuthView,
+    pub openrouter: ProviderAuthView,
     pub ollama: OllamaView,
 }
 
@@ -545,6 +529,7 @@ impl From<AiProvidersDisk> for AiProvidersView {
             anthropic: v.anthropic.into(),
             google: v.google.into(),
             openai: v.openai.into(),
+            openrouter: v.openrouter.into(),
             ollama: v.ollama.into(),
         }
     }
@@ -557,6 +542,7 @@ impl From<AiProvidersView> for AiProvidersDisk {
             anthropic: v.anthropic.into(),
             google: v.google.into(),
             openai: v.openai.into(),
+            openrouter: v.openrouter.into(),
             ollama: v.ollama.into(),
         }
     }
@@ -659,10 +645,7 @@ pub fn settings_get(app: &tauri::AppHandle) -> Result<SettingsView> {
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };
 
-    let mut disk: SettingsDisk = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(_) => SettingsDisk::default(),
-    };
+    let mut disk: SettingsDisk = serde_json::from_str(&text).unwrap_or_default();
 
     // Lightweight migrations so defaults improve over time without manual settings edits.
     // Only overwrite known-previous defaults (so user customizations are preserved).
@@ -684,9 +667,18 @@ pub fn settings_get(app: &tauri::AppHandle) -> Result<SettingsView> {
             || disk.ai_providers.anthropic.default_model == "claude-sonnet-4-5-20250929"
         {
             disk.ai_providers.anthropic.default_model = "claude-opus-4-6".to_string();
-            changed = true;
         }
         disk.version = 3;
+        changed = true;
+    }
+    if disk.version < 4 {
+        if disk.ai_providers.openrouter.default_model.trim().is_empty() {
+            disk.ai_providers.openrouter.default_model = "openrouter/auto".to_string();
+        }
+        if disk.ai_providers.openrouter.auth_mode.is_none() {
+            disk.ai_providers.openrouter.auth_mode = Some(AuthModeDisk::ApiKey);
+        }
+        disk.version = 4;
         changed = true;
     }
 
@@ -713,10 +705,10 @@ pub fn settings_set(app: &tauri::AppHandle, view: SettingsView) -> Result<Settin
     // Normalize via disk schema so missing fields get defaults.
     let mut disk = SettingsDisk::from(view);
     if disk.version == 0 {
-        disk.version = 3;
+        disk.version = 4;
     }
-    if disk.version < 3 {
-        disk.version = 3;
+    if disk.version < 4 {
+        disk.version = 4;
     }
 
     let text = serde_json::to_string_pretty(&disk).context("serialize settings.json")?;
@@ -756,6 +748,14 @@ pub struct ProviderModelsResult {
     pub status_code: Option<u16>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OllamaPullResult {
+    pub ok: bool,
+    pub model: String,
+    pub message: String,
+}
+
 pub fn validate_provider_key(provider: &str, key: &str) -> Result<ProviderKeyValidationResult> {
     let provider = provider.to_ascii_lowercase();
     let key = key.trim();
@@ -781,6 +781,10 @@ pub fn validate_provider_key(provider: &str, key: &str) -> Result<ProviderKeyVal
             .send(),
         "openai" => client
             .get("https://api.openai.com/v1/models")
+            .bearer_auth(key)
+            .send(),
+        "openrouter" => client
+            .get("https://openrouter.ai/api/v1/models")
             .bearer_auth(key)
             .send(),
         "google" | "gemini" => client
@@ -857,9 +861,80 @@ fn extract_model_strings(v: &serde_json::Value) -> Vec<String> {
     out
 }
 
-pub fn list_provider_models(provider: &str, key: &str) -> Result<ProviderModelsResult> {
+fn normalize_ollama_base_url(base_url: Option<&str>) -> String {
+    let raw = base_url.unwrap_or("http://localhost:11434").trim();
+    let normalized = if raw.is_empty() {
+        "http://localhost:11434".to_string()
+    } else {
+        raw.to_string()
+    };
+    normalized.trim_end_matches('/').to_string()
+}
+
+fn extract_ollama_models(v: &serde_json::Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(arr) = v.get("models").and_then(|a| a.as_array()) {
+        for row in arr {
+            if let Some(name) = row.get("name").and_then(|s| s.as_str()) {
+                out.push(name.to_string());
+                continue;
+            }
+            if let Some(model) = row.get("model").and_then(|s| s.as_str()) {
+                out.push(model.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub fn list_provider_models(
+    provider: &str,
+    key: &str,
+    base_url: Option<&str>,
+) -> Result<ProviderModelsResult> {
     let provider = provider.to_ascii_lowercase();
     let key = key.trim();
+    if provider == "ollama" {
+        let base = normalize_ollama_base_url(base_url);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .build()
+            .context("build http client")?;
+        let resp = client.get(format!("{base}/api/tags")).send();
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(ProviderModelsResult {
+                    ok: false,
+                    models: Vec::new(),
+                    message: format!("Request failed: {e}"),
+                    status_code: None,
+                })
+            }
+        };
+
+        let code = resp.status().as_u16();
+        if !resp.status().is_success() {
+            return Ok(ProviderModelsResult {
+                ok: false,
+                models: Vec::new(),
+                message: "Request failed".to_string(),
+                status_code: Some(code),
+            });
+        }
+
+        let json: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+        let models = extract_ollama_models(&json);
+        return Ok(ProviderModelsResult {
+            ok: !models.is_empty(),
+            models,
+            message: "OK".to_string(),
+            status_code: Some(code),
+        });
+    }
+
     if key.is_empty() {
         return Ok(ProviderModelsResult {
             ok: false,
@@ -882,6 +957,10 @@ pub fn list_provider_models(provider: &str, key: &str) -> Result<ProviderModelsR
             .send(),
         "openai" => client
             .get("https://api.openai.com/v1/models")
+            .bearer_auth(key)
+            .send(),
+        "openrouter" => client
+            .get("https://openrouter.ai/api/v1/models")
             .bearer_auth(key)
             .send(),
         "google" | "gemini" => client
@@ -929,5 +1008,55 @@ pub fn list_provider_models(provider: &str, key: &str) -> Result<ProviderModelsR
         models,
         message: "OK".to_string(),
         status_code: Some(code),
+    })
+}
+
+pub fn pull_ollama_model(model: &str, base_url: Option<&str>) -> Result<OllamaPullResult> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Ok(OllamaPullResult {
+            ok: false,
+            model: String::new(),
+            message: "Model is required".to_string(),
+        });
+    }
+
+    let base = normalize_ollama_base_url(base_url);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60 * 30))
+        .build()
+        .context("build http client")?;
+
+    let resp = client
+        .post(format!("{base}/api/pull"))
+        .json(&serde_json::json!({
+            "name": model,
+            "stream": false
+        }))
+        .send();
+
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(OllamaPullResult {
+                ok: false,
+                model: model.to_string(),
+                message: format!("Pull failed: {e}"),
+            })
+        }
+    };
+
+    if !resp.status().is_success() {
+        return Ok(OllamaPullResult {
+            ok: false,
+            model: model.to_string(),
+            message: format!("Pull failed with HTTP {}", resp.status().as_u16()),
+        });
+    }
+
+    Ok(OllamaPullResult {
+        ok: true,
+        model: model.to_string(),
+        message: "Model installed".to_string(),
     })
 }

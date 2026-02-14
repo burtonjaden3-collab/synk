@@ -6,18 +6,28 @@ import {
   gitEnsureWorktree,
   gitListWorktrees,
   gitRemoveWorktree,
-  mcpSetEnabledForAgent,
   mcpDiscoverForAgent,
   projectSessionConfigGet,
   projectSessionConfigSet,
   sessionCd,
   sessionRestart,
   skillsDiscoverForAgent,
-  skillsSetEnabledForAgent,
 } from "../../lib/tauri-api";
-import type { AgentType, McpServerInfo, SessionConfigDisk, SessionInfo, SkillInfo, WorktreeInfo } from "../../lib/types";
+import type {
+  AgentType,
+  CodexProvider,
+  McpServerInfo,
+  SessionConfigDisk,
+  SessionInfo,
+  SkillInfo,
+  WorktreeInfo,
+} from "../../lib/types";
 import { useAppStore } from "../../lib/store";
 import { defaultAppSettings } from "../../lib/default-settings";
+import { McpManager } from "./McpManager";
+import { MCP_AGENT_TABS } from "./mcp-agent-tabs";
+import { SKILL_AGENT_TABS } from "./skill-agent-tabs";
+import { SkillsBrowser } from "./SkillsBrowser";
 
 type SessionConfigProps = {
   tauriAvailable: boolean;
@@ -27,11 +37,13 @@ type SessionConfigProps = {
   onClose: () => void;
   onRefreshSessions: () => void;
 };
+type WorktreesView = "switch" | "destination" | "manage";
 
 const AGENTS: { id: AgentType; label: string }[] = [
   { id: "claude_code", label: "Claude Code" },
   { id: "gemini_cli", label: "Gemini CLI" },
   { id: "codex", label: "OpenAI Codex" },
+  { id: "openrouter", label: "OpenRouter" },
   { id: "terminal", label: "Terminal" },
 ];
 
@@ -40,15 +52,55 @@ function agentLabel(t: AgentType): string {
 }
 
 function agentSupportsSkills(t: AgentType): boolean {
-  return t === "claude_code" || t === "codex";
+  return t === "claude_code" || t === "codex" || t === "openrouter";
 }
 
 function agentSupportsMcp(t: AgentType): boolean {
-  return t === "claude_code" || t === "codex";
+  return t === "claude_code" || t === "codex" || t === "openrouter";
 }
 
 function uniqSorted(xs: string[]): string[] {
   return Array.from(new Set(xs)).sort((a, b) => a.localeCompare(b));
+}
+
+const DEFAULT_DISCOVERY_POLL_MS = Math.max(2000, defaultAppSettings().performance.pollIntervalMs);
+const QUICK_SWITCH_ROOT = "__synk_root__";
+const WORKTREES_VIEWS: { id: WorktreesView; label: string; hint: string }[] = [
+  { id: "switch", label: "Switch", hint: "Move this pane now" },
+  { id: "destination", label: "Destination", hint: "Set branch target" },
+  { id: "manage", label: "Manage", hint: "Review and delete" },
+];
+
+function worktreeDisplayName(w: WorktreeInfo): string {
+  if (w.branch) return w.branch;
+  if (w.detached) return "(detached)";
+  return "(unknown)";
+}
+
+function readablePath(path: string, projectPath: string | null): string {
+  const p = (path ?? "").trim();
+  if (!p) return "(unknown)";
+
+  const root = (projectPath ?? "").replace(/\/+$/, "");
+  if (root && (p === root || p.startsWith(`${root}/`))) {
+    const rest = p.slice(root.length).replace(/^\/+/, "");
+    return rest ? `./${rest}` : ".";
+  }
+
+  const synkWorktreeMarker = "/.synk/worktrees/";
+  const markerIdx = p.indexOf(synkWorktreeMarker);
+  if (markerIdx >= 0) return p.slice(markerIdx + 1);
+
+  const parts = p.split("/").filter(Boolean);
+  if (parts.length <= 5) return p;
+  return `.../${parts.slice(-5).join("/")}`;
+}
+
+function normalizePathForMatch(path: string | null | undefined): string {
+  const p = (path ?? "").trim();
+  if (!p) return "";
+  if (p === "/") return p;
+  return p.replace(/\/+$/, "");
 }
 
 export function SessionConfig(props: SessionConfigProps) {
@@ -77,9 +129,16 @@ export function SessionConfig(props: SessionConfigProps) {
   const [confirmBody, setConfirmBody] = useState<string>("");
   const [confirmCta, setConfirmCta] = useState<string>("Yes");
   const [confirmTone, setConfirmTone] = useState<"blue" | "red">("blue");
+  const [quickSwitchValue, setQuickSwitchValue] = useState<string>(QUICK_SWITCH_ROOT);
+  const [worktreesView, setWorktreesView] = useState<WorktreesView>("switch");
+  const [skillsAgentTab, setSkillsAgentTab] = useState<AgentType>("claude_code");
+  const [mcpAgentTab, setMcpAgentTab] = useState<AgentType>("claude_code");
   const confirmActionRef = useRef<null | (() => Promise<void>)>(null);
+  const sourcesInFlightRef = useRef(false);
 
   const branchPrefix = (settings?.git?.branchPrefix ?? "feat/").trim();
+  const settingsPollMs = settings?.performance.pollIntervalMs ?? DEFAULT_DISCOVERY_POLL_MS;
+  const refreshIntervalMs = Math.max(2000, settingsPollMs);
 
   const normalizeDestinationBranch = useCallback(
     (raw: string): string => {
@@ -92,22 +151,26 @@ export function SessionConfig(props: SessionConfigProps) {
     [branchPrefix],
   );
 
-  const configuredMcpNames = useMemo(
-    () => uniqSorted(mcpServers.filter((s) => s.configured).map((s) => s.name)),
-    [mcpServers],
-  );
-  const skillNames = useMemo(() => uniqSorted(skills.map((s) => s.name)), [skills]);
-
-  const refreshSources = useCallback(async (agentType: AgentType) => {
+  const refreshSources = useCallback(async (agentType: AgentType, background = false) => {
     if (!tauriAvailable || !projectPath) return;
-    setSourcesBusy(true);
-    const [s, m] = await Promise.all([
-      skillsDiscoverForAgent(projectPath, agentType),
-      mcpDiscoverForAgent(projectPath, agentType),
-    ]);
-    setSkills(s.installed);
-    setMcpServers(m.servers);
-    setSourcesBusy(false);
+    if (sourcesInFlightRef.current) return;
+    sourcesInFlightRef.current = true;
+    if (!background) setSourcesBusy(true);
+    try {
+      const [s, m] = await Promise.all([
+        skillsDiscoverForAgent(projectPath, agentType),
+        mcpDiscoverForAgent(projectPath, agentType),
+      ]);
+      setSkills(s.installed);
+      setMcpServers(m.servers);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+      throw e;
+    } finally {
+      if (!background) setSourcesBusy(false);
+      sourcesInFlightRef.current = false;
+    }
   }, [tauriAvailable, projectPath]);
 
   const refreshBranches = useCallback(async () => {
@@ -207,16 +270,75 @@ export function SessionConfig(props: SessionConfigProps) {
     // Agent type is not user-editable in Session Config; always reflect the live session.
     return (session?.agentType ?? "terminal") as AgentType;
   }, [session?.agentType]);
-  const canUseSkills = useMemo(() => agentSupportsSkills(selectedAgentType), [selectedAgentType]);
-  const canUseMcp = useMemo(() => agentSupportsMcp(selectedAgentType), [selectedAgentType]);
+  const activeSkillsTab = useMemo(
+    () => SKILL_AGENT_TABS.find((tab) => tab.id === skillsAgentTab) ?? SKILL_AGENT_TABS[0],
+    [skillsAgentTab],
+  );
+  const activeMcpTab = useMemo(
+    () => MCP_AGENT_TABS.find((tab) => tab.id === mcpAgentTab) ?? MCP_AGENT_TABS[0],
+    [mcpAgentTab],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    if (agentSupportsSkills(selectedAgentType)) {
+      setSkillsAgentTab(selectedAgentType);
+      return;
+    }
+    setSkillsAgentTab(SKILL_AGENT_TABS[0]?.id ?? "claude_code");
+  }, [open, session?.sessionId, selectedAgentType]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (agentSupportsMcp(selectedAgentType)) {
+      setMcpAgentTab(selectedAgentType);
+      return;
+    }
+    setMcpAgentTab(MCP_AGENT_TABS[0]?.id ?? "claude_code");
+  }, [open, session?.sessionId, selectedAgentType]);
 
   // If the user changes the agent dropdown, re-load the provider-specific skills/MCP lists.
   useEffect(() => {
     if (!open) return;
     if (!tauriAvailable) return;
     if (!projectPath) return;
-    refreshSources(selectedAgentType).catch(() => {});
+    refreshSources(selectedAgentType, true).catch(() => {});
   }, [open, tauriAvailable, projectPath, selectedAgentType, refreshSources]);
+
+  // Keep skill/MCP lists live while the panel is open.
+  useEffect(() => {
+    if (!open) return;
+    if (!tauriAvailable) return;
+    if (!projectPath) return;
+
+    const tick = () => {
+      if (saving || sourcesBusy) return;
+      refreshSources(selectedAgentType, true).catch(() => {});
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") tick();
+    }, refreshIntervalMs);
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", tick);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [
+    open,
+    tauriAvailable,
+    projectPath,
+    selectedAgentType,
+    refreshSources,
+    refreshIntervalMs,
+    saving,
+    sourcesBusy,
+  ]);
 
   const persist = useCallback(
     async (next: SessionConfigDisk) => {
@@ -251,7 +373,19 @@ export function SessionConfig(props: SessionConfigProps) {
     [tauriAvailable, projectPath, session?.paneIndex, setSessionConfig],
   );
 
-  const models = useMemo(() => settings?.aiProviders ?? defaultAppSettings().aiProviders, [settings?.aiProviders]);
+  const models = useMemo(() => {
+    const defaults = defaultAppSettings().aiProviders;
+    const raw = (settings?.aiProviders ?? {}) as Partial<typeof defaults>;
+    return {
+      ...defaults,
+      ...raw,
+      anthropic: { ...defaults.anthropic, ...(raw.anthropic ?? {}) },
+      google: { ...defaults.google, ...(raw.google ?? {}) },
+      openai: { ...defaults.openai, ...(raw.openai ?? {}) },
+      openrouter: { ...defaults.openrouter, ...(raw.openrouter ?? {}) },
+      ollama: { ...defaults.ollama, ...(raw.ollama ?? {}) },
+    };
+  }, [settings?.aiProviders]);
   const modelForAgent = useCallback(
     (t: AgentType): string | null => {
       switch (t) {
@@ -261,12 +395,48 @@ export function SessionConfig(props: SessionConfigProps) {
           return models.google.defaultModel || null;
         case "codex":
           return models.openai.defaultModel || null;
+        case "openrouter":
+          return models.openrouter.defaultModel || null;
         case "terminal":
         default:
           return null;
       }
     },
     [models],
+  );
+  const modelForSession = useCallback(
+    (s: SessionInfo): string | null => {
+      const liveModel = (s.model ?? "").trim();
+      if (liveModel) return liveModel;
+      return modelForAgent(s.agentType);
+    },
+    [modelForAgent],
+  );
+  const codexProviderForSession = useCallback((s: SessionInfo): CodexProvider | null => {
+    if (s.agentType === "openrouter") return "openrouter";
+    if (s.agentType !== "codex") return null;
+    return s.codexProvider ?? null;
+  }, []);
+  const switchSessionLocation = useCallback(
+    async (dir: string, branch: string | null) => {
+      if (!session) return;
+      const targetDir = dir.trim();
+      if (!targetDir) throw new Error("target dir is empty");
+
+      if (session.agentType === "terminal") {
+        await sessionCd(session.sessionId, targetDir, branch);
+        return;
+      }
+
+      await sessionRestart(
+        session.sessionId,
+        targetDir,
+        branch,
+        modelForSession(session),
+        codexProviderForSession(session),
+      );
+    },
+    [session, modelForSession, codexProviderForSession],
   );
 
   const switchPaneNow = useCallback(
@@ -275,19 +445,14 @@ export function SessionConfig(props: SessionConfigProps) {
 
       const branch = normalizeDestinationBranch(rawBranch);
       const wantsRoot = !branch;
-      const liveAgentType = session.agentType;
-      const model = modelForAgent(liveAgentType);
+      const isTerminal = session.agentType === "terminal";
 
       setError(null);
       setWorktreeBusy(true);
       setWorktreeStatus(wantsRoot ? "Switching to root…" : "Opening worktree…");
       try {
         if (wantsRoot) {
-          if (liveAgentType === "terminal") {
-            await sessionCd(session.sessionId, projectPath, null);
-          } else {
-            await sessionRestart(session.sessionId, projectPath, null, model);
-          }
+          await switchSessionLocation(projectPath, null);
           onRefreshSessions();
 
           const next: SessionConfigDisk = { ...(effectiveCfg as SessionConfigDisk), branch: null };
@@ -301,9 +466,9 @@ export function SessionConfig(props: SessionConfigProps) {
         const base = (baseBranch ?? "").trim();
         if (!base) throw new Error("base branch is empty");
 
-        let ensuredPath: string | null = null;
+        let ensuredPath = "";
         let ensuredBranch: string = branch;
-        if (liveAgentType === "terminal") {
+        if (isTerminal) {
           const resp = await gitCreateWorktree(session.sessionId, branch, base);
           ensuredPath = resp.worktreePath;
           ensuredBranch = resp.branch;
@@ -311,7 +476,7 @@ export function SessionConfig(props: SessionConfigProps) {
           const resp = await gitEnsureWorktree(projectPath, branch, base);
           ensuredPath = resp.worktreePath;
           ensuredBranch = resp.branch;
-          await sessionRestart(session.sessionId, ensuredPath, ensuredBranch, model);
+          await switchSessionLocation(ensuredPath, ensuredBranch);
         }
 
         onRefreshSessions();
@@ -338,7 +503,7 @@ export function SessionConfig(props: SessionConfigProps) {
       baseBranch,
       persist,
       normalizeDestinationBranch,
-      modelForAgent,
+      switchSessionLocation,
       onRefreshSessions,
       refreshWorktrees,
     ],
@@ -414,13 +579,7 @@ export function SessionConfig(props: SessionConfigProps) {
           const wd = session.workingDir ?? "";
           const isCurrent = !!wd && (wd === w.path || wd.startsWith(`${w.path}/`));
           if (isCurrent) {
-            const liveAgentType = session.agentType;
-            const model = modelForAgent(liveAgentType);
-            if (liveAgentType === "terminal") {
-              await sessionCd(session.sessionId, projectPath, null);
-            } else {
-              await sessionRestart(session.sessionId, projectPath, null, model);
-            }
+            await switchSessionLocation(projectPath, null);
           }
 
           // If the destination branch was this branch, clear it.
@@ -452,7 +611,7 @@ export function SessionConfig(props: SessionConfigProps) {
       effectiveCfg,
       worktreeBusy,
       saving,
-      modelForAgent,
+      switchSessionLocation,
       persist,
       onRefreshSessions,
       refreshWorktrees,
@@ -470,13 +629,7 @@ export function SessionConfig(props: SessionConfigProps) {
       setWorktreeBusy(true);
       setWorktreeStatus("Switching…");
       try {
-        const liveAgentType = session.agentType;
-        const model = modelForAgent(liveAgentType);
-        if (liveAgentType === "terminal") {
-          await sessionCd(session.sessionId, targetDir, branch);
-        } else {
-          await sessionRestart(session.sessionId, targetDir, branch, model);
-        }
+        await switchSessionLocation(targetDir, branch);
         onRefreshSessions();
         setWorktreeStatus(`Switched (${sourceLabel})`);
       } catch (e) {
@@ -487,7 +640,7 @@ export function SessionConfig(props: SessionConfigProps) {
         window.setTimeout(() => setWorktreeStatus(null), 1400);
       }
     },
-    [tauriAvailable, projectPath, session, modelForAgent, onRefreshSessions],
+    [tauriAvailable, projectPath, session, switchSessionLocation, onRefreshSessions],
   );
 
   const requestSwitchToDir = useCallback(
@@ -514,15 +667,110 @@ export function SessionConfig(props: SessionConfigProps) {
 
   const currentLocation = useMemo(() => {
     if (!session || !projectPath) return { kind: "unknown" as const };
-    const wd = session.workingDir ?? "";
-    if (!wd) return { kind: "unknown" as const };
+    const wdRaw = session.workingDir ?? "";
+    if (!wdRaw) return { kind: "unknown" as const };
+    const wd = normalizePathForMatch(wdRaw);
+    const root = normalizePathForMatch(projectPath);
 
-    // Consider the user "in" a worktree if their WD is inside the worktree path.
-    const inWt = worktrees.find((w) => !!w.path && (wd === w.path || wd.startsWith(`${w.path}/`)));
+    // The project root itself is also listed as a git worktree; treat it as "root" in this UI.
+    if (root && (wd === root || wd.startsWith(`${root}/`))) return { kind: "root" as const };
+
+    // Consider the user "in" a worktree if their WD is inside a non-root worktree path.
+    const inWt = worktrees.find((w) => {
+      const wtPath = normalizePathForMatch(w.path);
+      if (!wtPath || wtPath === root) return false;
+      return wd === wtPath || wd.startsWith(`${wtPath}/`);
+    });
     if (inWt) return { kind: "worktree" as const, worktree: inWt };
-    if (wd === projectPath || wd.startsWith(`${projectPath}/`)) return { kind: "root" as const };
-    return { kind: "other" as const, wd };
+    return { kind: "other" as const, wd: wdRaw };
   }, [session?.workingDir, worktrees, projectPath]);
+
+  const sortedWorktrees = useMemo(
+    () => {
+      const root = normalizePathForMatch(projectPath);
+      return worktrees
+        .filter((w) => {
+          const wtPath = normalizePathForMatch(w.path);
+          return !!wtPath && wtPath !== root;
+        })
+        .sort((a, b) => (a.branch ?? a.path).localeCompare(b.branch ?? b.path));
+    },
+    [worktrees, projectPath],
+  );
+
+  const quickSwitchOptions = useMemo(() => {
+    const options: {
+      value: string;
+      title: string;
+      optionLabel: string;
+      path: string;
+      branch: string | null;
+      worktree: WorktreeInfo | null;
+    }[] = [
+      {
+        value: QUICK_SWITCH_ROOT,
+        title: "Project root",
+        optionLabel: projectPath ? `Project root - ${readablePath(projectPath, projectPath)}` : "Project root",
+        path: projectPath ?? "",
+        branch: null,
+        worktree: null,
+      },
+    ];
+    for (const w of sortedWorktrees) {
+      const title = worktreeDisplayName(w);
+      options.push({
+        value: w.path,
+        title,
+        optionLabel: `${title} - ${readablePath(w.path, projectPath)}`,
+        path: w.path,
+        branch: w.branch ?? null,
+        worktree: w,
+      });
+    }
+    return options;
+  }, [sortedWorktrees, projectPath]);
+
+  const selectedQuickSwitch = useMemo(
+    () => quickSwitchOptions.find((o) => o.value === quickSwitchValue) ?? null,
+    [quickSwitchOptions, quickSwitchValue],
+  );
+  const selectedQuickSwitchWorktree = selectedQuickSwitch?.worktree ?? null;
+  const currentWorktreePath = currentLocation.kind === "worktree" ? currentLocation.worktree.path : "";
+
+  useEffect(() => {
+    if (!open) return;
+    if (currentLocation.kind === "worktree") {
+      setQuickSwitchValue(currentLocation.worktree.path);
+    } else {
+      setQuickSwitchValue(QUICK_SWITCH_ROOT);
+    }
+  }, [open, session?.sessionId, currentLocation.kind, currentWorktreePath]);
+
+  useEffect(() => {
+    if (quickSwitchOptions.some((o) => o.value === quickSwitchValue)) return;
+    setQuickSwitchValue(QUICK_SWITCH_ROOT);
+  }, [quickSwitchOptions, quickSwitchValue]);
+
+  useEffect(() => {
+    if (!open) return;
+    setWorktreesView("switch");
+  }, [open, session?.sessionId]);
+
+  const selectedQuickSwitchIsCurrent = useMemo(() => {
+    if (!selectedQuickSwitch) return false;
+    if (selectedQuickSwitch.value === QUICK_SWITCH_ROOT) return currentLocation.kind === "root";
+    return currentLocation.kind === "worktree" && currentLocation.worktree.path === selectedQuickSwitch.value;
+  }, [selectedQuickSwitch, currentLocation]);
+  const activeWorktreesView = useMemo(
+    () => WORKTREES_VIEWS.find((v) => v.id === worktreesView) ?? WORKTREES_VIEWS[0],
+    [worktreesView],
+  );
+  const worktreeStats = useMemo(() => {
+    const total = sortedWorktrees.length;
+    const synkManaged = sortedWorktrees.filter((w) => w.isSynkManaged).length;
+    const locked = sortedWorktrees.filter((w) => w.locked).length;
+    return { total, synkManaged, locked };
+  }, [sortedWorktrees]);
 
   const desiredBranchRaw = useMemo(() => (effectiveCfg?.branch ?? "").trim(), [effectiveCfg?.branch]);
   const desiredBranchNormalized = useMemo(
@@ -625,13 +873,6 @@ export function SessionConfig(props: SessionConfigProps) {
             </div>
           ) : null}
 
-          <div className="rounded-xl border border-border bg-bg-secondary p-2">
-            <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">APPLIES ON RESTART</div>
-            <div className="mt-1 text-[11px] text-text-secondary">
-              Worktree settings are persisted to <span className="font-mono">.synk/config.json</span>. Skills/MCP are global per-agent.
-            </div>
-          </div>
-
           {error ? (
             <div className="mt-2 rounded-lg border border-accent-red/40 bg-accent-red/10 px-2 py-2 text-[11px] text-accent-red">
               {error}
@@ -651,7 +892,7 @@ export function SessionConfig(props: SessionConfigProps) {
               <div>
                 <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">WORKTREES</div>
                 <div className="mt-0.5 text-[11px] text-text-secondary">
-                  Quick-switch where this pane runs, or set a destination branch worktree for this pane.
+                  Move this pane now, configure a destination branch, or manage existing worktrees.
                 </div>
               </div>
               <button
@@ -668,126 +909,196 @@ export function SessionConfig(props: SessionConfigProps) {
               </button>
             </div>
 
-            <div className="mt-2 grid grid-cols-1 gap-2">
-              <div className="rounded-lg border border-border bg-bg-tertiary px-2 py-2">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-semibold text-text-primary">Current location</div>
-                    <div className="mt-0.5 truncate font-mono text-[11px] text-text-secondary">
-                      {currentLocation.kind === "worktree"
-                        ? `${currentLocation.worktree.branch ?? "(detached)"} · ${currentLocation.worktree.path}`
-                        : currentLocation.kind === "root"
-                          ? `root · ${projectPath}`
-                          : currentLocation.kind === "other"
-                            ? `dir · ${currentLocation.wd}`
-                            : "(unknown)"}
-                    </div>
-                  </div>
+            <div className="mt-2 grid grid-cols-3 gap-1 rounded-lg border border-border bg-bg-tertiary p-1">
+              {WORKTREES_VIEWS.map((view) => {
+                const active = worktreesView === view.id;
+                return (
                   <button
+                    key={view.id}
                     type="button"
-                    className="shrink-0 rounded-lg border border-border bg-bg-secondary px-2 py-1 text-[11px] font-semibold text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-60"
-                    disabled={!tauriAvailable || saving || worktreeBusy || !projectPath || currentLocation.kind === "root"}
-                    title="Switch this pane to the project root"
-                    onClick={() => requestSwitchToDir(projectPath ?? "", null, "Quick switch: root")}
+                    onClick={() => setWorktreesView(view.id)}
+                    className={[
+                      "rounded-md px-2 py-1.5 text-center transition-colors",
+                      active
+                        ? "border border-accent-blue/45 bg-accent-blue/10"
+                        : "border border-transparent hover:bg-bg-hover",
+                    ].join(" ")}
+                    aria-pressed={active}
+                    title={view.hint}
                   >
-                    Root
+                    <div className={["text-[10px] font-semibold tracking-[0.08em]", active ? "text-accent-blue" : "text-text-secondary"].join(" ")}>
+                      {view.label}
+                    </div>
                   </button>
-                </div>
-              </div>
+                );
+              })}
+            </div>
+            <div className="mt-1 px-1 text-[10px] text-text-secondary/80">{activeWorktreesView.hint}</div>
 
-              <div className="rounded-lg border border-border bg-bg-tertiary px-2 py-2">
+            <div className="mt-2 rounded-lg border border-border bg-bg-tertiary px-2 py-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-semibold text-text-primary">Current location</div>
+                  <div className="mt-0.5 text-[11px] leading-relaxed text-text-secondary">
+                    {currentLocation.kind === "worktree" ? (
+                      <>
+                        <div className="text-[12px] font-semibold text-text-primary">
+                          {worktreeDisplayName(currentLocation.worktree)}
+                        </div>
+                        <div className="mt-0.5 break-words font-mono text-[11px] text-text-secondary" title={currentLocation.worktree.path}>
+                          {readablePath(currentLocation.worktree.path, projectPath)}
+                        </div>
+                      </>
+                    ) : currentLocation.kind === "root" ? (
+                      <>
+                        <div className="text-[12px] font-semibold text-text-primary">Project root</div>
+                        <div className="mt-0.5 break-words font-mono text-[11px] text-text-secondary" title={projectPath ?? ""}>
+                          {readablePath(projectPath ?? "", projectPath)}
+                        </div>
+                      </>
+                    ) : currentLocation.kind === "other" ? (
+                      <>
+                        <div className="text-[12px] font-semibold text-text-primary">Other directory</div>
+                        <div className="mt-0.5 break-words font-mono text-[11px] text-text-secondary" title={currentLocation.wd}>
+                          {readablePath(currentLocation.wd, projectPath)}
+                        </div>
+                      </>
+                    ) : (
+                      "(unknown)"
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-lg border border-border bg-bg-secondary px-2 py-1 text-[11px] font-semibold text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-60"
+                  disabled={!tauriAvailable || saving || worktreeBusy || !projectPath || currentLocation.kind === "root"}
+                  title="Switch this pane to the project root"
+                  onClick={() => requestSwitchToDir(projectPath ?? "", null, "Quick switch: root")}
+                >
+                  Root
+                </button>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <div className="rounded-md border border-border bg-bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-text-secondary/80">
+                  {worktreeStats.total} total
+                </div>
+                <div className="rounded-md border border-border bg-bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-text-secondary/80">
+                  {worktreeStats.synkManaged} synk
+                </div>
+                {worktreeStats.locked ? (
+                  <div className="rounded-md border border-accent-orange/40 bg-accent-orange/10 px-1.5 py-0.5 font-mono text-[10px] text-accent-orange">
+                    {worktreeStats.locked} locked
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            {worktreesView === "switch" ? (
+              <div className="mt-2 rounded-lg border border-border bg-bg-tertiary px-2 py-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-[11px] font-semibold text-text-primary">Quick switch</div>
-                  <div className="font-mono text-[10px] text-text-secondary/70">{worktrees.length}</div>
+                  <div className="font-mono text-[10px] text-text-secondary/70">{worktreeStats.total} worktrees</div>
                 </div>
 
-                {worktrees.length === 0 ? (
-                  <div className="mt-2 text-[11px] text-text-secondary/70">
-                    No worktrees yet. Use <span className="font-semibold text-text-secondary">Destination branch</span>{" "}
-                    below to create one.
-                  </div>
-                ) : (
-                  <div className="mt-2 grid grid-cols-1 gap-1">
-                    {worktrees
-                      .slice()
-                      .sort((a, b) => (a.branch ?? a.path).localeCompare(b.branch ?? b.path))
-                      .map((w) => {
-                        const label = w.branch ? w.branch : w.detached ? "(detached)" : "(unknown)";
-                        const isCurrent = currentLocation.kind === "worktree" && currentLocation.worktree.path === w.path;
-                        return (
-                          <div
-                            key={w.path}
-                            className={[
-                              "flex items-center justify-between gap-2 rounded-lg border px-2 py-2",
-                              isCurrent ? "border-accent-blue/50 bg-accent-blue/10" : "border-border bg-bg-secondary",
-                            ].join(" ")}
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <div className="truncate font-mono text-[11px] text-text-primary">{label}</div>
-                                {w.isSynkManaged ? (
-                                  <div className="rounded-md border border-border bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
-                                    synk
-                                  </div>
-                                ) : null}
-                                {w.locked ? (
-                                  <div className="rounded-md border border-accent-orange/40 bg-accent-orange/10 px-1.5 py-0.5 text-[10px] text-accent-orange">
-                                    locked
-                                  </div>
-                                ) : null}
-                              </div>
-                              <div className="mt-0.5 truncate font-mono text-[10px] text-text-secondary/70">{w.path}</div>
-                            </div>
+                <div className="mt-2 grid grid-cols-1 gap-2">
+                  <label className="flex flex-col gap-1">
+                    <div className="text-[11px] font-semibold text-text-secondary">Switch target</div>
+                    <select
+                      className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2 text-[12px] text-text-primary disabled:opacity-60"
+                      value={quickSwitchValue}
+                      disabled={!tauriAvailable || saving || worktreeBusy || !projectPath || !session}
+                      onChange={(e) => setQuickSwitchValue(e.target.value)}
+                    >
+                      {quickSwitchOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.optionLabel}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-                            <button
-                              type="button"
-                              className="shrink-0 rounded-lg border border-border bg-bg-tertiary px-2 py-1 text-[11px] font-semibold text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-60"
-                              disabled={!tauriAvailable || saving || worktreeBusy || !projectPath || !session || isCurrent}
-                              title="Switch this pane into this worktree"
-                              onClick={() => requestSwitchToDir(w.path, w.branch ?? null, `Quick switch: ${label}`)}
-                            >
-                              {isCurrent ? "Current" : "Switch"}
-                            </button>
-
-                            <button
-                              type="button"
-                              className="shrink-0 rounded-lg border border-accent-red/40 bg-accent-red/10 px-2 py-1 text-[11px] font-semibold text-accent-red hover:bg-accent-red/15 disabled:opacity-60"
-                              disabled={
-                                !tauriAvailable ||
-                                saving ||
-                                worktreeBusy ||
-                                !projectPath ||
-                                !session ||
-                                !w.isSynkManaged ||
-                                !w.branch ||
-                                w.locked
-                              }
-                              title={
-                                !w.isSynkManaged
-                                  ? "Only Synk-managed worktrees can be deleted from the UI"
-                                  : !w.branch
-                                    ? "Detached worktrees can't be deleted from the UI yet"
-                                    : w.locked
-                                      ? "Worktree is locked"
-                                      : "Delete this worktree (also deletes the branch)"
-                              }
-                              onClick={() => requestDeleteWorktree(w)}
-                            >
-                              Delete
-                            </button>
+                  {selectedQuickSwitch ? (
+                    <div className="rounded-lg border border-border bg-bg-secondary px-2 py-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <div className="text-[12px] font-semibold text-text-primary">{selectedQuickSwitch.title}</div>
+                        {selectedQuickSwitchIsCurrent ? (
+                          <div className="rounded-md border border-accent-blue/45 bg-accent-blue/10 px-1.5 py-0.5 text-[10px] text-accent-blue">
+                            current
                           </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </div>
+                        ) : null}
+                        {selectedQuickSwitchWorktree?.isSynkManaged ? (
+                          <div className="rounded-md border border-border bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                            synk
+                          </div>
+                        ) : null}
+                        {selectedQuickSwitchWorktree?.detached ? (
+                          <div className="rounded-md border border-border bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                            detached
+                          </div>
+                        ) : null}
+                        {selectedQuickSwitchWorktree?.locked ? (
+                          <div className="rounded-md border border-accent-orange/40 bg-accent-orange/10 px-1.5 py-0.5 text-[10px] text-accent-orange">
+                            locked
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="mt-1 break-words font-mono text-[11px] text-text-secondary" title={selectedQuickSwitch.path}>
+                        {readablePath(selectedQuickSwitch.path, projectPath)}
+                      </div>
+                    </div>
+                  ) : null}
 
-              <div className="rounded-lg border border-border bg-bg-tertiary px-2 py-2">
+                  {worktreeStats.total === 0 ? (
+                    <div className="text-[11px] text-text-secondary/70">
+                      No worktrees yet. Use <span className="font-semibold text-text-secondary">Destination</span> to create one.
+                    </div>
+                  ) : null}
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="h-9 shrink-0 rounded-lg border border-accent-blue/45 bg-accent-blue/10 px-3 text-[11px] font-semibold text-accent-blue hover:bg-accent-blue/15 disabled:opacity-60"
+                      disabled={
+                        !tauriAvailable ||
+                        saving ||
+                        worktreeBusy ||
+                        !projectPath ||
+                        !session ||
+                        !selectedQuickSwitch ||
+                        selectedQuickSwitchIsCurrent
+                      }
+                      title={
+                        selectedQuickSwitchIsCurrent
+                          ? "This pane is already in the selected location"
+                          : "Switch this pane to the selected location"
+                      }
+                      onClick={() => {
+                        if (!selectedQuickSwitch || !projectPath) return;
+                        if (selectedQuickSwitch.value === QUICK_SWITCH_ROOT) {
+                          requestSwitchToDir(projectPath, null, "Quick switch: root");
+                          return;
+                        }
+                        requestSwitchToDir(
+                          selectedQuickSwitch.path,
+                          selectedQuickSwitch.branch,
+                          `Quick switch: ${selectedQuickSwitch.title}`,
+                        );
+                      }}
+                    >
+                      {selectedQuickSwitchIsCurrent ? "Current" : "Switch"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {worktreesView === "destination" ? (
+              <div className="mt-2 rounded-lg border border-border bg-bg-tertiary px-2 py-2">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-[11px] font-semibold text-text-primary">Destination branch</div>
                     <div className="mt-0.5 text-[11px] text-text-secondary">
-                      Synk will create the worktree (if needed) and can auto-enter it when you open the project.
+                      Set a branch target for this pane, then create and switch when ready.
                     </div>
                   </div>
                   <button
@@ -813,9 +1124,7 @@ export function SessionConfig(props: SessionConfigProps) {
                   <label className="flex flex-col gap-1">
                     <div className="flex items-center justify-between gap-2">
                       <div className="text-[11px] font-semibold text-text-secondary">Branch</div>
-                      <div className="font-mono text-[10px] text-text-secondary/70">
-                        prefix {branchPrefix || "(none)"}
-                      </div>
+                      <div className="font-mono text-[10px] text-text-secondary/70">prefix {branchPrefix || "(none)"}</div>
                     </div>
                     <input
                       className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2 font-mono text-[12px] text-text-primary disabled:opacity-60"
@@ -847,7 +1156,9 @@ export function SessionConfig(props: SessionConfigProps) {
                         <div
                           className={[
                             "flex-none rounded-md border px-1.5 py-0.5 font-mono text-[10px]",
-                            desiredWorktree ? "border-accent-green/40 bg-accent-green/10 text-accent-green" : "border-border bg-bg-tertiary text-text-secondary",
+                            desiredWorktree
+                              ? "border-accent-green/40 bg-accent-green/10 text-accent-green"
+                              : "border-border bg-bg-tertiary text-text-secondary",
                           ].join(" ")}
                           title={desiredWorktree?.path ?? "Worktree will be created on switch"}
                         >
@@ -891,126 +1202,203 @@ export function SessionConfig(props: SessionConfigProps) {
                     <button
                       type="button"
                       className="h-9 shrink-0 rounded-lg border border-accent-blue/45 bg-accent-blue/10 px-3 text-[11px] font-semibold text-accent-blue hover:bg-accent-blue/15 disabled:opacity-60"
-                      disabled={!tauriAvailable || saving || worktreeBusy || !session || !projectPath || !desiredBranchRaw || !baseBranch.trim()}
+                      disabled={
+                        !tauriAvailable || saving || worktreeBusy || !session || !projectPath || !desiredBranchRaw || !baseBranch.trim()
+                      }
                       title="Create the worktree (if needed) and switch this pane into it"
                       onClick={() => requestSwitch(desiredBranchRaw, "Destination: create + switch")}
                     >
                       Create + switch
                     </button>
                   </div>
-
                 </div>
               </div>
+            ) : null}
 
-              {worktreeStatus ? (
-                <div className="text-[11px] text-text-secondary/80">{worktreeStatus}</div>
-              ) : null}
-            </div>
+            {worktreesView === "manage" ? (
+              <div className="mt-2 rounded-lg border border-border bg-bg-tertiary px-2 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-semibold text-text-primary">Manage worktrees</div>
+                  <div className="font-mono text-[10px] text-text-secondary/70">{worktreeStats.total} listed</div>
+                </div>
+
+                {worktreeStats.total === 0 ? (
+                  <div className="mt-2 text-[11px] text-text-secondary/70">
+                    No worktrees found yet.
+                  </div>
+                ) : (
+                  <div className="mt-2 grid grid-cols-1 gap-1.5">
+                    {sortedWorktrees.map((w) => {
+                      const label = worktreeDisplayName(w);
+                      const isCurrent = currentLocation.kind === "worktree" && currentLocation.worktree.path === w.path;
+                      return (
+                        <div
+                          key={w.path}
+                          className={[
+                            "flex items-start justify-between gap-2 rounded-lg border px-2 py-2",
+                            isCurrent ? "border-accent-blue/50 bg-accent-blue/10" : "border-border bg-bg-secondary",
+                          ].join(" ")}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <div className="text-[12px] font-semibold text-text-primary">{label}</div>
+                              {isCurrent ? (
+                                <div className="rounded-md border border-accent-blue/45 bg-accent-blue/10 px-1.5 py-0.5 text-[10px] text-accent-blue">
+                                  current
+                                </div>
+                              ) : null}
+                              {w.isSynkManaged ? (
+                                <div className="rounded-md border border-border bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                                  synk
+                                </div>
+                              ) : null}
+                              {w.detached ? (
+                                <div className="rounded-md border border-border bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                                  detached
+                                </div>
+                              ) : null}
+                              {w.locked ? (
+                                <div className="rounded-md border border-accent-orange/40 bg-accent-orange/10 px-1.5 py-0.5 text-[10px] text-accent-orange">
+                                  locked
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="mt-1 break-words font-mono text-[11px] text-text-secondary/80" title={w.path}>
+                              {readablePath(w.path, projectPath)}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <button
+                              type="button"
+                              className="rounded-lg border border-border bg-bg-tertiary px-2 py-1 text-[11px] font-semibold text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-60"
+                              disabled={!tauriAvailable || saving || worktreeBusy || !projectPath || !session || isCurrent}
+                              title={isCurrent ? "This pane is already in this worktree" : "Switch this pane into this worktree"}
+                              onClick={() => requestSwitchToDir(w.path, w.branch ?? null, `Manage: ${label}`)}
+                            >
+                              {isCurrent ? "Current" : "Open"}
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-lg border border-accent-red/40 bg-accent-red/10 px-2 py-1 text-[11px] font-semibold text-accent-red hover:bg-accent-red/15 disabled:opacity-60"
+                              disabled={
+                                !tauriAvailable ||
+                                saving ||
+                                worktreeBusy ||
+                                !projectPath ||
+                                !session ||
+                                !w.isSynkManaged ||
+                                !w.branch ||
+                                w.locked
+                              }
+                              title={
+                                !w.isSynkManaged
+                                  ? "Only Synk-managed worktrees can be deleted from the UI"
+                                  : !w.branch
+                                    ? "Detached worktrees can't be deleted from the UI yet"
+                                    : w.locked
+                                      ? "Worktree is locked"
+                                      : "Delete this worktree (also deletes the branch)"
+                              }
+                              onClick={() => requestDeleteWorktree(w)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {worktreeStatus ? <div className="mt-2 text-[11px] text-text-secondary/80">{worktreeStatus}</div> : null}
           </div>
 
           <div className="mt-3 rounded-xl border border-border bg-bg-secondary p-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">SKILLS</div>
-              {canUseSkills ? (
-                <div className="font-mono text-[10px] text-text-secondary">
-                  {skills.filter((s) => s.enabled).length}/{skillNames.length}
-                </div>
-              ) : (
-                <div className="font-mono text-[10px] text-text-secondary">n/a</div>
-              )}
+              <div className="flex items-center gap-2">
+                <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">SKILLS</div>
+                <div className="font-mono text-[10px] text-text-secondary">{activeSkillsTab.label}</div>
+              </div>
             </div>
-            <div className="mt-2 space-y-1">
-              {!canUseSkills ? (
-                <div className="text-[11px] text-text-secondary">
-                  Skills are supported for Claude Code and Codex. This session is{" "}
-                  <span className="font-mono">{agentLabel(selectedAgentType)}</span>.
-                </div>
-              ) : skillNames.length === 0 ? (
-                <div className="text-[11px] text-text-secondary">No skills detected.</div>
-              ) : (
-                skills.map((row) => (
-                  <label
-                    key={row.name}
-                    className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-border bg-bg-tertiary px-2 py-2 text-xs hover:bg-bg-hover"
+            <div className="mt-2 grid grid-cols-3 gap-1 rounded-lg border border-border bg-bg-tertiary p-1">
+              {SKILL_AGENT_TABS.map((tab) => {
+                const active = tab.id === activeSkillsTab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setSkillsAgentTab(tab.id)}
+                    className={[
+                      "rounded-md px-2 py-1 text-[10px] font-semibold tracking-[0.08em] transition-colors",
+                      active
+                        ? "border border-accent-blue/45 bg-accent-blue/10 text-accent-blue"
+                        : "border border-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary",
+                    ].join(" ")}
+                    aria-pressed={active}
                   >
-                    <span className="min-w-0 flex-1 truncate">{row.name}</span>
-                    <input
-                      type="checkbox"
-                      checked={row.enabled}
-                      disabled={!tauriAvailable || sourcesBusy}
-                      onChange={async (e) => {
-                        const nextEnabled = e.target.checked;
-                        setError(null);
-                        setSourcesBusy(true);
-                        try {
-                          await skillsSetEnabledForAgent(selectedAgentType, row.name, nextEnabled, row.path, row.description ?? null);
-                          await refreshSources(selectedAgentType);
-                        } catch (err) {
-                          setError(String(err));
-                        } finally {
-                          setSourcesBusy(false);
-                        }
-                      }}
-                      aria-label={`Enable skill ${row.name}`}
-                    />
-                  </label>
-                ))
-              )}
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-2">
+              <SkillsBrowser
+                key={activeSkillsTab.id}
+                tauriAvailable={tauriAvailable}
+                projectPath={projectPath}
+                agentType={activeSkillsTab.id}
+                title={activeSkillsTab.title}
+              />
+            </div>
+            <div className="mt-2 text-[11px] text-text-secondary/75">
+              Skills are global per-agent. This session currently runs{" "}
+              <span className="font-mono">{agentLabel(selectedAgentType)}</span>.
             </div>
           </div>
 
           <div className="mt-3 rounded-xl border border-border bg-bg-secondary p-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">MCP SERVERS</div>
-              {canUseMcp ? (
-                <div className="font-mono text-[10px] text-text-secondary">
-                  {mcpServers.filter((s) => s.configured && s.enabled).length}/{configuredMcpNames.length}
-                </div>
-              ) : (
-                <div className="font-mono text-[10px] text-text-secondary">n/a</div>
-              )}
+              <div className="flex items-center gap-2">
+                <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">MCP SERVERS</div>
+                <div className="font-mono text-[10px] text-text-secondary">{activeMcpTab.label}</div>
+              </div>
             </div>
-            <div className="mt-2 space-y-1">
-              {!canUseMcp ? (
-                <div className="text-[11px] text-text-secondary">
-                  MCP is supported for Claude Code and Codex. This session is{" "}
-                  <span className="font-mono">{agentLabel(selectedAgentType)}</span>.
-                </div>
-              ) : configuredMcpNames.length === 0 ? (
-                <div className="text-[11px] text-text-secondary">No configured MCP servers detected.</div>
-              ) : (
-                mcpServers.filter((s) => s.configured).map((row) => {
-                  const scope = row.source === "project" ? "project" : "global";
-                  const canToggle = selectedAgentType === "claude_code" && tauriAvailable && !sourcesBusy && row.source !== "process";
-                  return (
-                    <label
-                      key={row.name}
-                      className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-border bg-bg-tertiary px-2 py-2 text-xs hover:bg-bg-hover"
-                    >
-                      <span className="min-w-0 flex-1 truncate">{row.name}</span>
-                      <input
-                        type="checkbox"
-                        checked={row.enabled}
-                        disabled={!canToggle}
-                        onChange={async (e) => {
-                          const nextEnabled = e.target.checked;
-                          setError(null);
-                          setSourcesBusy(true);
-                          try {
-                            await mcpSetEnabledForAgent(selectedAgentType, row.name, nextEnabled, projectPath, scope);
-                            await refreshSources(selectedAgentType);
-                          } catch (err) {
-                            setError(String(err));
-                          } finally {
-                            setSourcesBusy(false);
-                          }
-                        }}
-                        aria-label={`Enable MCP server ${row.name}`}
-                      />
-                    </label>
-                  );
-                })
-              )}
+            <div className="mt-2 grid grid-cols-3 gap-1 rounded-lg border border-border bg-bg-tertiary p-1">
+              {MCP_AGENT_TABS.map((tab) => {
+                const active = tab.id === activeMcpTab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setMcpAgentTab(tab.id)}
+                    className={[
+                      "rounded-md px-2 py-1 text-[10px] font-semibold tracking-[0.08em] transition-colors",
+                      active
+                        ? "border border-accent-blue/45 bg-accent-blue/10 text-accent-blue"
+                        : "border border-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary",
+                    ].join(" ")}
+                    aria-pressed={active}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-2">
+              <McpManager
+                key={activeMcpTab.id}
+                tauriAvailable={tauriAvailable}
+                projectPath={projectPath}
+                agentType={activeMcpTab.id}
+                title={activeMcpTab.title}
+                allowToggle={activeMcpTab.id === "claude_code"}
+              />
+            </div>
+            <div className="mt-2 text-[11px] text-text-secondary/75">
+              MCP is global per-agent. This session currently runs{" "}
+              <span className="font-mono">{agentLabel(selectedAgentType)}</span>.
             </div>
           </div>
 

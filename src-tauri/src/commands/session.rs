@@ -1,7 +1,7 @@
 use tauri::State;
 
 use crate::core::session_manager::{
-    CreateSessionArgs, CreateSessionResponse, SessionInfo, SharedSessionManager,
+    CodexProvider, CreateSessionArgs, CreateSessionResponse, SessionInfo, SharedSessionManager,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -43,6 +43,8 @@ pub struct SessionRestartArgs {
     pub branch: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub codex_provider: Option<CodexProvider>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -111,7 +113,9 @@ pub fn session_cd(
     let cd_cmd = format!("cd '{}'\r\n", shell_single_quote_escape(dir));
 
     let mut guard = manager.lock().expect("session manager mutex poisoned");
-    guard.write(args.session_id, &cd_cmd).map_err(|e| format!("{e:#}"))?;
+    guard
+        .write(args.session_id, &cd_cmd)
+        .map_err(|e| format!("{e:#}"))?;
     guard
         .set_session_git_context(args.session_id, args.branch, Some(dir.to_string()))
         .map_err(|e| format!("{e:#}"))?;
@@ -126,7 +130,14 @@ pub fn session_restart(
 ) -> std::result::Result<SessionInfo, String> {
     let mut guard = manager.lock().expect("session manager mutex poisoned");
     guard
-        .restart_session(app, args.session_id, args.dir, args.branch, args.model)
+        .restart_session(
+            app,
+            args.session_id,
+            args.dir,
+            args.branch,
+            args.model,
+            args.codex_provider,
+        )
         .map_err(|e| format!("{e:#}"))
 }
 

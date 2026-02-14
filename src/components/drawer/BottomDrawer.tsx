@@ -58,7 +58,7 @@ export function BottomDrawer(props: { tauriAvailable: boolean; mode: "navigation
   const setSettings = useAppStore((s) => s.setSettings);
 
   const savedHeight = settings?.ui?.drawerHeight ?? 250;
-  const savedOrder = settings?.ui?.drawerPanelOrder ?? ["cost", "git", "reviews"];
+  const savedOrder = settings?.ui?.drawerPanelOrder ?? ["cost", "git", "localhost", "reviews"];
 
   const [panelOrder, setPanelOrder] = useState<PanelId[]>(() => dedupePanels(savedOrder));
   const [active, setActive] = useState<PanelId>(() => panelOrder[0] ?? "cost");

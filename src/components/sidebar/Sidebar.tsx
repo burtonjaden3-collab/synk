@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 
-import type { RecentProject, SessionId, SessionInfo } from "../../lib/types";
+import type { AgentType, RecentProject, SessionId, SessionInfo } from "../../lib/types";
 import { AgentStatusOverview } from "./AgentStatusOverview";
 import { McpManager } from "./McpManager";
+import { MCP_AGENT_TABS } from "./mcp-agent-tabs";
 import { ProjectSelector } from "./ProjectSelector";
 import { SessionConfig } from "./SessionConfig";
+import { SKILL_AGENT_TABS } from "./skill-agent-tabs";
 import { SkillsBrowser } from "./SkillsBrowser";
 
 type SidebarProps = {
@@ -43,8 +45,18 @@ export function Sidebar(props: SidebarProps) {
   } = props;
 
   const [configOpen, setConfigOpen] = useState(false);
+  const [skillsAgentTab, setSkillsAgentTab] = useState<AgentType>("claude_code");
+  const [mcpAgentTab, setMcpAgentTab] = useState<AgentType>("claude_code");
   const expandedWidth = Math.max(220, Math.min(520, width ?? 280));
   const maxSessionsLabel = maxSessions ?? 12;
+  const activeSkillTab = useMemo(
+    () => SKILL_AGENT_TABS.find((tab) => tab.id === skillsAgentTab) ?? SKILL_AGENT_TABS[0],
+    [skillsAgentTab],
+  );
+  const activeMcpTab = useMemo(
+    () => MCP_AGENT_TABS.find((tab) => tab.id === mcpAgentTab) ?? MCP_AGENT_TABS[0],
+    [mcpAgentTab],
+  );
 
   const selectedSession = useMemo(
     () => sessions.find((s) => s.sessionId === selectedSessionId) ?? null,
@@ -81,83 +93,118 @@ export function Sidebar(props: SidebarProps) {
 
           <div className="relative flex-1 overflow-hidden">
             <div className="h-full overflow-auto px-3 py-3">
-            <section>
-              <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">PROJECT</div>
-              <div className="mt-2">
-                <ProjectSelector
-                  tauriAvailable={tauriAvailable}
-                  currentProject={currentProject}
-                  recentProjects={recentProjects}
-                  onOpenFolder={onOpenFolder}
-                  onSelectProject={onSelectProject}
-                />
-              </div>
-            </section>
-
-            <div className="my-4 h-px bg-border/80" />
-
-            <section>
-              <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">SKILLS</div>
-              <div className="mt-2">
-                <div className="space-y-2">
-                  <SkillsBrowser
+              <section>
+                <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">PROJECT</div>
+                <div className="mt-2">
+                  <ProjectSelector
                     tauriAvailable={tauriAvailable}
-                    projectPath={currentProject?.path ?? null}
-                    agentType="claude_code"
-                    title="Claude Skills"
-                  />
-                  <SkillsBrowser
-                    tauriAvailable={tauriAvailable}
-                    projectPath={currentProject?.path ?? null}
-                    agentType="codex"
-                    title="Codex Skills"
+                    currentProject={currentProject}
+                    recentProjects={recentProjects}
+                    onOpenFolder={onOpenFolder}
+                    onSelectProject={onSelectProject}
                   />
                 </div>
-              </div>
-            </section>
+              </section>
 
-            <div className="my-4 h-px bg-border/80" />
+              <div className="my-4 h-px bg-border/80" />
 
-            <section>
-              <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">MCP</div>
-              <div className="mt-2">
-                <div className="space-y-2">
-                  <McpManager
-                    tauriAvailable={tauriAvailable}
-                    projectPath={currentProject?.path ?? null}
-                    agentType="claude_code"
-                    title="Claude MCP"
-                    allowToggle
-                  />
-                  <McpManager
-                    tauriAvailable={tauriAvailable}
-                    projectPath={currentProject?.path ?? null}
-                    agentType="codex"
-                    title="Codex MCP"
-                    allowToggle={false}
+              <section>
+                <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">SKILLS</div>
+                <div className="mt-2">
+                  <div className="rounded-xl border border-border bg-bg-secondary p-2">
+                    <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-bg-tertiary p-1">
+                      {SKILL_AGENT_TABS.map((tab) => {
+                        const active = tab.id === activeSkillTab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setSkillsAgentTab(tab.id)}
+                            className={[
+                              "rounded-md px-2 py-1 text-[10px] font-semibold tracking-[0.08em] transition-colors",
+                              active
+                                ? "border border-accent-blue/45 bg-accent-blue/10 text-accent-blue"
+                                : "border border-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary",
+                            ].join(" ")}
+                            aria-pressed={active}
+                          >
+                            {tab.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-2">
+                      <SkillsBrowser
+                        key={activeSkillTab.id}
+                        tauriAvailable={tauriAvailable}
+                        projectPath={currentProject?.path ?? null}
+                        agentType={activeSkillTab.id}
+                        title={activeSkillTab.title}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <div className="my-4 h-px bg-border/80" />
+
+              <section>
+                <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">MCP</div>
+                <div className="mt-2">
+                  <div className="rounded-xl border border-border bg-bg-secondary p-2">
+                    <div className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-bg-tertiary p-1">
+                      {MCP_AGENT_TABS.map((tab) => {
+                        const active = tab.id === activeMcpTab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setMcpAgentTab(tab.id)}
+                            className={[
+                              "rounded-md px-2 py-1 text-[10px] font-semibold tracking-[0.08em] transition-colors",
+                              active
+                                ? "border border-accent-blue/45 bg-accent-blue/10 text-accent-blue"
+                                : "border border-transparent text-text-secondary hover:bg-bg-hover hover:text-text-primary",
+                            ].join(" ")}
+                            aria-pressed={active}
+                          >
+                            {tab.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-2">
+                      <McpManager
+                        key={activeMcpTab.id}
+                        tauriAvailable={tauriAvailable}
+                        projectPath={currentProject?.path ?? null}
+                        agentType={activeMcpTab.id}
+                        title={activeMcpTab.title}
+                        allowToggle={activeMcpTab.id === "claude_code"}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <div className="my-4 h-px bg-border/80" />
+
+              <section>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">SESSIONS</div>
+                  <div className="font-mono text-[10px] text-text-secondary">{sessions.length}/{maxSessionsLabel}</div>
+                </div>
+                <div className="mt-2">
+                  <AgentStatusOverview
+                    sessions={sessions}
+                    selectedSessionId={selectedSessionId}
+                    onSelectSession={(sid) => {
+                      onSelectSession(sid);
+                      setConfigOpen(true);
+                    }}
                   />
                 </div>
-              </div>
-            </section>
-
-            <div className="my-4 h-px bg-border/80" />
-
-            <section>
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] font-semibold tracking-[0.18em] text-text-secondary">SESSIONS</div>
-                <div className="font-mono text-[10px] text-text-secondary">{sessions.length}/{maxSessionsLabel}</div>
-              </div>
-              <div className="mt-2">
-                <AgentStatusOverview
-                  sessions={sessions}
-                  selectedSessionId={selectedSessionId}
-                  onSelectSession={(sid) => {
-                    onSelectSession(sid);
-                    setConfigOpen(true);
-                  }}
-                />
-              </div>
-            </section>
+              </section>
             </div>
 
             <div

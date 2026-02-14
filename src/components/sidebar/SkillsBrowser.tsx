@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { defaultAppSettings } from "../../lib/default-settings";
+import { useAppStore } from "../../lib/store";
 import { skillsDiscoverForAgent, skillsSetEnabledForAgent } from "../../lib/tauri-api";
 import type { AgentType, SkillInfo, SkillsDiscoveryResult } from "../../lib/types";
 
@@ -17,6 +19,8 @@ function descFor(skill: SkillInfo): string {
   return bits.join(" · ");
 }
 
+const DEFAULT_DISCOVERY_POLL_MS = Math.max(2000, defaultAppSettings().performance.pollIntervalMs);
+
 export function SkillsBrowser(props: SkillsBrowserProps) {
   const { tauriAvailable, projectPath, agentType, title } = props;
 
@@ -24,24 +28,60 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const inFlightRef = useRef(false);
+  const settingsPollMs = useAppStore((s) => s.settings?.performance.pollIntervalMs ?? DEFAULT_DISCOVERY_POLL_MS);
+  const refreshIntervalMs = Math.max(2000, settingsPollMs);
+  const reactId = useId();
+  const panelId = `skills-panel-${agentType}-${reactId}`;
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (background = false) => {
     if (!tauriAvailable) return;
-    setError(null);
-    setLoading(true);
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    if (!background) {
+      setError(null);
+      setLoading(true);
+    }
     try {
       const next = await skillsDiscoverForAgent(projectPath, agentType);
       setData(next);
+      setError(null);
     } catch (e) {
       setError(String(e));
     } finally {
-      setLoading(false);
+      if (!background) {
+        setLoading(false);
+      }
+      inFlightRef.current = false;
     }
-  }, [tauriAvailable, projectPath]);
+  }, [tauriAvailable, projectPath, agentType]);
 
   useEffect(() => {
-    refresh().catch(() => {});
-  }, [refresh]);
+    if (!tauriAvailable) return;
+
+    const tick = () => {
+      refresh(true).catch(() => {});
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+
+    tick();
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") tick();
+    }, refreshIntervalMs);
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", tick);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [tauriAvailable, refresh, refreshIntervalMs]);
+
+  useEffect(() => {
+    setOpen(false);
+  }, [projectPath, agentType]);
 
   const installed = data?.installed ?? [];
   const recommended = data?.recommended ?? [];
@@ -57,7 +97,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          aria-controls="skills-panel"
+          aria-controls={panelId}
           title="Collapse/expand"
         >
           <div className="font-mono text-[11px] text-text-secondary">{open ? "▾" : "▸"}</div>
@@ -84,7 +124,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
         <button
           className="rounded-lg border border-border bg-bg-tertiary px-2.5 py-2 text-[11px] font-medium text-text-secondary hover:bg-bg-hover disabled:opacity-60"
           disabled={!tauriAvailable || loading}
-          onClick={() => refresh().catch(() => {})}
+          onClick={() => refresh(false).catch(() => {})}
           type="button"
           title="Re-scan skills"
         >
@@ -93,7 +133,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
       </div>
 
       <div
-        id="skills-panel"
+        id={panelId}
         className={[
           // Avoid fixed max-height caps (they break long lists); animate using grid row sizing instead.
           "mt-2 grid transition-[grid-template-rows,opacity] duration-200 ease-out",
@@ -120,7 +160,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
             ) : (
               installed.map((s) => (
                 <label
-                  key={s.name}
+                  key={`${s.name}:${s.path}`}
                   className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-bg-tertiary px-2 py-2 text-left hover:bg-bg-hover"
                   title={s.path}
                 >
@@ -160,7 +200,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
                         return {
                           ...prev,
                           installed: prev.installed.map((x) =>
-                            x.name === s.name ? { ...x, enabled: nextEnabled } : x,
+                            x.path === s.path ? { ...x, enabled: nextEnabled } : x,
                           ),
                         };
                       });
@@ -168,7 +208,7 @@ export function SkillsBrowser(props: SkillsBrowserProps) {
                         await skillsSetEnabledForAgent(agentType, s.name, nextEnabled, s.path, s.description ?? null);
                       } catch (err) {
                         setError(String(err));
-                        refresh().catch(() => {});
+                        refresh(false).catch(() => {});
                       }
                     }}
                     aria-label={`Enable ${s.name}`}

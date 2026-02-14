@@ -494,7 +494,11 @@ impl ProcessPool {
     /// Restores an entry in the "active" tracking map.
     ///
     /// This is primarily used to recover accounting after a failed "restart" attempt.
-    pub fn attach_active(pool: SharedProcessPool, session_key: usize, pid: Option<u32>) -> Result<()> {
+    pub fn attach_active(
+        pool: SharedProcessPool,
+        session_key: usize,
+        pid: Option<u32>,
+    ) -> Result<()> {
         let mut guard = pool.lock().expect("pool mutex poisoned");
         if guard.active.contains_key(&session_key) {
             return Err(anyhow!("session_key {session_key} already active"));
@@ -716,7 +720,7 @@ fn strip_ansi(s: &str) -> String {
 
         if chars.peek() == Some(&'[') {
             let _ = chars.next(); // consume '['
-            while let Some(c) = chars.next() {
+            for c in chars.by_ref() {
                 if ('@'..='~').contains(&c) {
                     break;
                 }

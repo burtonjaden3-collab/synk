@@ -14,6 +14,8 @@ function agentBadge(agentType: AgentType): { label: string; className: string } 
       return { label: "Gemini", className: "border-accent-blue/40 bg-accent-blue/10 text-accent-blue" };
     case "codex":
       return { label: "Codex", className: "border-accent-green/40 bg-accent-green/10 text-accent-green" };
+    case "openrouter":
+      return { label: "Router", className: "border-accent-orange/40 bg-accent-orange/10 text-accent-orange" };
     case "terminal":
       return { label: "Term", className: "border-border bg-bg-tertiary text-text-secondary" };
   }
@@ -70,4 +72,3 @@ export function AgentStatusOverview(props: AgentStatusOverviewProps) {
     </div>
   );
 }
-

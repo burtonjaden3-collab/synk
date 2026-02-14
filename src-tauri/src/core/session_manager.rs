@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -8,13 +10,21 @@ use std::thread::{self, JoinHandle};
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
+use tauri::path::BaseDirectory;
+use tauri::{Emitter, Manager};
 
 use crate::core::agent_detection::{AgentType, SharedAgentRegistry};
 use crate::core::process_pool::{ProcessPool, PtyHandle, SharedProcessPool};
 use crate::events::{SessionExitEvent, SessionOutputEvent};
 
 pub type SharedSessionManager = Arc<std::sync::Mutex<SessionManager>>;
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CodexProvider {
+    Openai,
+    Openrouter,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +36,8 @@ pub struct CreateSessionArgs {
     pub working_dir: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub codex_provider: Option<CodexProvider>,
     pub env: Option<HashMap<String, String>>,
 }
 
@@ -45,6 +57,10 @@ pub struct SessionInfo {
     pub session_id: usize,
     pub pane_index: usize,
     pub agent_type: AgentType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_provider: Option<CodexProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub project_path: String,
     pub branch: Option<String>,
     pub working_dir: Option<String>,
@@ -57,6 +73,13 @@ struct SessionRecord {
     output_thread: JoinHandle<()>,
     scrollback: Arc<std::sync::Mutex<VecDeque<u8>>>,
 }
+
+type BuiltSession = (
+    SessionInfo,
+    Arc<AtomicBool>,
+    JoinHandle<()>,
+    Arc<std::sync::Mutex<VecDeque<u8>>>,
+);
 
 pub struct SessionManager {
     pool: SharedProcessPool,
@@ -106,13 +129,27 @@ impl SessionManager {
         let (effective_agent_type, warning) = self.resolve_agent(&args.agent_type);
 
         // If anything fails after we claim the PTY, return it to the pool so we don't leak.
-        let built =
-            (|| -> Result<(SessionInfo, Arc<AtomicBool>, JoinHandle<()>, Arc<std::sync::Mutex<VecDeque<u8>>>)> {
+        let built = (|| -> Result<BuiltSession> {
             // Session bootstrap: cd + env exports.
             let wd = args
                 .working_dir
                 .clone()
                 .unwrap_or_else(|| args.project_path.clone());
+            let launch_model = normalized_model(args.model.as_deref());
+
+            // Configure Codex provider env from Synk settings (OpenAI vs OpenRouter).
+            let codex_provider = match effective_agent_type {
+                AgentType::Codex => args.codex_provider,
+                AgentType::Openrouter => Some(CodexProvider::Openrouter),
+                _ => None,
+            };
+            let codex_uses_openrouter = apply_codex_provider_env(
+                &mut handle,
+                &app,
+                effective_agent_type,
+                codex_provider,
+                launch_model.as_deref(),
+            )?;
 
             if let Some(env) = &args.env {
                 for (k, v) in env {
@@ -164,7 +201,12 @@ impl SessionManager {
             if effective_agent_type != AgentType::Terminal {
                 if let Some(cmd) = effective_agent_type.cli_command() {
                     let full =
-                        agent_command_with_model(effective_agent_type, cmd, args.model.as_deref());
+                        agent_command_with_model(
+                            effective_agent_type,
+                            cmd,
+                            launch_model.as_deref(),
+                            codex_uses_openrouter,
+                        );
                     if let Err(err) = handle.write_str(&format!("{full}\r\n")) {
                         stop.store(true, Ordering::Relaxed);
                         let _ = output_thread.join();
@@ -177,6 +219,8 @@ impl SessionManager {
                 session_id,
                 pane_index,
                 agent_type: effective_agent_type,
+                codex_provider,
+                model: launch_model,
                 project_path: args.project_path,
                 branch: args.branch,
                 working_dir: Some(wd),
@@ -274,6 +318,7 @@ impl SessionManager {
         dir: String,
         branch: Option<String>,
         model: Option<String>,
+        codex_provider: Option<CodexProvider>,
     ) -> Result<SessionInfo> {
         let dir = dir.trim();
         if dir.is_empty() {
@@ -317,6 +362,8 @@ impl SessionManager {
 
         let pane_index = rec.info.pane_index;
         let agent_type = rec.info.agent_type;
+        let codex_provider = codex_provider.or(rec.info.codex_provider);
+        let launch_model = normalized_model(model.as_deref()).or(rec.info.model.clone());
         let project_path = rec.info.project_path.clone();
 
         // Hand old handle back to the pool in the background (recycle/kill may take time).
@@ -336,12 +383,25 @@ impl SessionManager {
             "export SYNK_PROJECT_PATH='{}'\r\n",
             shell_single_quote_escape(&project_path)
         ))?;
+        // Re-apply Codex provider env for restarted sessions.
+        let codex_uses_openrouter = apply_codex_provider_env(
+            &mut handle,
+            &app,
+            agent_type,
+            codex_provider,
+            launch_model.as_deref(),
+        )?;
         handle.write_str(&format!("cd '{}'\r\n", shell_single_quote_escape(dir)))?;
 
         // Relaunch agent CLI (if any).
         if agent_type != AgentType::Terminal {
             if let Some(cmd) = agent_type.cli_command() {
-                let full = agent_command_with_model(agent_type, cmd, model.as_deref());
+                let full = agent_command_with_model(
+                    agent_type,
+                    cmd,
+                    launch_model.as_deref(),
+                    codex_uses_openrouter,
+                );
                 handle.write_str(&format!("{full}\r\n"))?;
             }
         }
@@ -362,6 +422,8 @@ impl SessionManager {
             session_id,
             pane_index,
             agent_type,
+            codex_provider,
+            model: launch_model,
             project_path,
             branch,
             working_dir: Some(dir.to_string()),
@@ -501,194 +563,9 @@ fn spawn_output_pump(
         let fd = handle.master_fd()?;
         let mut reader = handle.clone_reader()?;
 
-        // Minimal filter for terminal Device Status Report queries.
-        // Some TUIs (including Codex CLI via crossterm) query cursor position via
-        // `ESC [ 6 n` and expect a fast reply. In a webview terminal, the
-        // "terminal replies on stdin" roundtrip can be too slow; answering at the
-        // PTY layer avoids startup crashes.
-        struct DsrFilter {
-            pending: Vec<u8>,
-        }
-
-        impl DsrFilter {
-            fn new() -> Self {
-                Self { pending: Vec::new() }
-            }
-
-            fn flush_pending(&mut self, out: &mut Vec<u8>) {
-                if !self.pending.is_empty() {
-                    out.extend_from_slice(&self.pending);
-                    self.pending.clear();
-                }
-            }
-
-            fn respond(fd: i32, bytes: &[u8]) {
-                // Best-effort: this is small; if we can't write immediately we just drop.
-                let mut off = 0usize;
-                for _ in 0..3 {
-                    while off < bytes.len() {
-                        let rc = unsafe {
-                            libc::write(
-                                fd,
-                                bytes[off..].as_ptr() as *const _,
-                                bytes.len().saturating_sub(off),
-                            )
-                        };
-                        if rc > 0 {
-                            off += rc as usize;
-                            continue;
-                        }
-                        if rc == 0 {
-                            return;
-                        }
-                        let err = std::io::Error::last_os_error();
-                        match err.raw_os_error() {
-                            Some(libc::EINTR) => continue,
-                            Some(errno) if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK => {
-                                // Give the PTY a moment to become writable.
-                                let mut pfd = libc::pollfd {
-                                    fd,
-                                    events: libc::POLLOUT,
-                                    revents: 0,
-                                };
-                                let _ = unsafe {
-                                    libc::poll(&mut pfd as *mut libc::pollfd, 1, 5)
-                                };
-                                break;
-                            }
-                            _ => return,
-                        }
-                    }
-                    if off >= bytes.len() {
-                        return;
-                    }
-                }
-            }
-
-            fn feed(&mut self, fd: i32, input: &[u8], out: &mut Vec<u8>) {
-                for &b in input {
-                    if self.pending.is_empty() {
-                        if b == 0x1b {
-                            self.pending.push(b);
-                            continue;
-                        }
-                        out.push(b);
-                        continue;
-                    }
-
-                    match self.pending.as_slice() {
-                        [0x1b] => {
-                            if b == b'[' {
-                                self.pending.push(b);
-                            } else {
-                                self.flush_pending(out);
-                                if b == 0x1b {
-                                    self.pending.push(b);
-                                } else {
-                                    out.push(b);
-                                }
-                            }
-                        }
-                        [0x1b, b'['] => {
-                            if b == b'?' || b == b'5' || b == b'6' {
-                                self.pending.push(b);
-                            } else {
-                                self.flush_pending(out);
-                                if b == 0x1b {
-                                    self.pending.push(b);
-                                } else {
-                                    out.push(b);
-                                }
-                            }
-                        }
-                        [0x1b, b'[', b'?'] => {
-                            if b == b'5' || b == b'6' {
-                                self.pending.push(b);
-                            } else {
-                                self.flush_pending(out);
-                                if b == 0x1b {
-                                    self.pending.push(b);
-                                } else {
-                                    out.push(b);
-                                }
-                            }
-                        }
-                        // ESC [ 6
-                        [0x1b, b'[', b'6'] => {
-                            if b == b'n' {
-                                Self::respond(fd, b"\x1b[1;1R");
-                                self.pending.clear();
-                            } else {
-                                self.flush_pending(out);
-                                if b == 0x1b {
-                                    self.pending.push(b);
-                                } else {
-                                    out.push(b);
-                                }
-                            }
-                        }
-                        // ESC [ 5
-                        [0x1b, b'[', b'5'] => {
-                            if b == b'n' {
-                                Self::respond(fd, b"\x1b[0n");
-                                self.pending.clear();
-                            } else {
-                                self.flush_pending(out);
-                                if b == 0x1b {
-                                    self.pending.push(b);
-                                } else {
-                                    out.push(b);
-                                }
-                            }
-                        }
-                        // ESC [ ? 6
-                        [0x1b, b'[', b'?', b'6'] => {
-                            if b == b'n' {
-                                // DECXCPR variant; reply with the private response form.
-                                Self::respond(fd, b"\x1b[?1;1R");
-                                self.pending.clear();
-                            } else {
-                                self.flush_pending(out);
-                                if b == 0x1b {
-                                    self.pending.push(b);
-                                } else {
-                                    out.push(b);
-                                }
-                            }
-                        }
-                        // ESC [ ? 5
-                        [0x1b, b'[', b'?', b'5'] => {
-                            if b == b'n' {
-                                // Best-effort: respond with "OK".
-                                Self::respond(fd, b"\x1b[0n");
-                                self.pending.clear();
-                            } else {
-                                self.flush_pending(out);
-                                if b == 0x1b {
-                                    self.pending.push(b);
-                                } else {
-                                    out.push(b);
-                                }
-                            }
-                        }
-                        _ => {
-                            // Unknown / too long; flush and restart.
-                            self.flush_pending(out);
-                            if b == 0x1b {
-                                self.pending.push(b);
-                            } else {
-                                out.push(b);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         let t = thread::spawn(move || {
             const SCROLLBACK_CAP_BYTES: usize = 512 * 1024;
             let mut buf = [0u8; 16 * 1024];
-            let mut dsr = DsrFilter::new();
 
             while !stop.load(Ordering::Relaxed) {
                 let mut pfd = libc::pollfd {
@@ -711,16 +588,10 @@ fn spawn_output_pump(
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let mut filtered: Vec<u8> = Vec::with_capacity(n);
-                        dsr.feed(fd, &buf[..n], &mut filtered);
-                        if filtered.is_empty() {
-                            continue;
-                        }
-
                         // Keep a bounded in-memory scrollback so the UI can restore content
                         // after React unmounts/remounts (e.g. Home -> Workspace navigation).
                         if let Ok(mut sb) = scrollback.lock() {
-                            for &b in &filtered {
+                            for &b in &buf[..n] {
                                 sb.push_back(b);
                             }
                             while sb.len() > SCROLLBACK_CAP_BYTES {
@@ -728,7 +599,7 @@ fn spawn_output_pump(
                             }
                         }
 
-                        let data_b64 = STANDARD.encode(&filtered);
+                        let data_b64 = STANDARD.encode(&buf[..n]);
                         let _ = app.emit(
                             "session:output",
                             SessionOutputEvent {
@@ -761,6 +632,159 @@ fn shell_single_quote_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
+fn normalized_model(model: Option<&str>) -> Option<String> {
+    model
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+fn agent_type_to_env_value(t: AgentType) -> &'static str {
+    match t {
+        AgentType::ClaudeCode => "claude_code",
+        AgentType::GeminiCli => "gemini_cli",
+        AgentType::Codex => "codex",
+        AgentType::Openrouter => "openrouter",
+        AgentType::Terminal => "terminal",
+    }
+}
+
+fn agent_command_with_model(
+    agent: AgentType,
+    base_cmd: &str,
+    model: Option<&str>,
+    force_api_login: bool,
+) -> String {
+    match agent {
+        AgentType::ClaudeCode => {
+            let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) else {
+                return base_cmd.to_string();
+            };
+            let m = shell_single_quote_escape(model);
+            format!("{base_cmd} --model '{m}'")
+        }
+        AgentType::GeminiCli => {
+            let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) else {
+                return base_cmd.to_string();
+            };
+            let m = shell_single_quote_escape(model);
+            format!("{base_cmd} --model '{m}'")
+        }
+        // Codex CLI supports config overrides via `-c key=value` (TOML parsed).
+        // We set both model and reasoning effort so sessions are consistent.
+        // Example from codex help: `-c model="o3"`.
+        AgentType::Codex | AgentType::Openrouter => {
+            let mut cmd = base_cmd.to_string();
+            if let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) {
+                let m = shell_single_quote_escape(model);
+                cmd.push_str(&format!(" -c 'model=\"{m}\"'"));
+            }
+            cmd.push_str(" -c 'model_reasoning_effort=\"high\"'");
+            if force_api_login {
+                cmd.push_str(" -c 'forced_login_method=\"api\"'");
+            }
+            cmd
+        }
+        AgentType::Terminal => base_cmd.to_string(),
+    }
+}
+
+fn openrouter_codex_home(app: &tauri::AppHandle) -> Result<PathBuf> {
+    let dir = app
+        .path()
+        .resolve("synk/codex-openrouter", BaseDirectory::Config)
+        .map_err(|e| anyhow!("resolve config path for openrouter codex home: {e}"))?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| anyhow!("create openrouter codex home {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+fn set_or_unset_env(handle: &mut PtyHandle, key: &str, value: Option<&str>) -> Result<()> {
+    if !is_valid_env_var_name(key) {
+        return Err(anyhow!("invalid env var name: {key}"));
+    }
+    match value {
+        Some(v) => handle.write_str(&format!(
+            "export {}='{}'\r\n",
+            key,
+            shell_single_quote_escape(v)
+        ))?,
+        None => handle.write_str(&format!("unset {}\r\n", key))?,
+    }
+    Ok(())
+}
+
+fn apply_codex_provider_env(
+    handle: &mut PtyHandle,
+    app: &tauri::AppHandle,
+    agent: AgentType,
+    codex_provider: Option<CodexProvider>,
+    model: Option<&str>,
+) -> Result<bool> {
+    if agent != AgentType::Codex && agent != AgentType::Openrouter {
+        return Ok(false);
+    }
+
+    let settings = match crate::core::settings::settings_get(app) {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+
+    let default_provider = settings.ai_providers.default.trim().to_ascii_lowercase();
+    let model_looks_openrouter = model
+        .map(str::trim)
+        .map(|m| m.to_ascii_lowercase().starts_with("openrouter/"))
+        .unwrap_or(false);
+    let use_openrouter = match agent {
+        AgentType::Openrouter => true,
+        AgentType::Codex => match codex_provider {
+            Some(CodexProvider::Openrouter) => true,
+            Some(CodexProvider::Openai) => false,
+            None => default_provider == "openrouter" || model_looks_openrouter,
+        },
+        _ => false,
+    };
+
+    if use_openrouter {
+        let key = settings.ai_providers.openrouter.api_key.unwrap_or_default();
+        let key = key.trim();
+        let codex_home = openrouter_codex_home(app)?;
+        set_or_unset_env(
+            handle,
+            "OPENAI_BASE_URL",
+            Some("https://openrouter.ai/api/v1"),
+        )?;
+        set_or_unset_env(
+            handle,
+            "OPENAI_API_KEY",
+            if key.is_empty() { None } else { Some(key) },
+        )?;
+        set_or_unset_env(
+            handle,
+            "OPENROUTER_API_KEY",
+            if key.is_empty() { None } else { Some(key) },
+        )?;
+        set_or_unset_env(
+            handle,
+            "CODEX_HOME",
+            Some(codex_home.to_string_lossy().as_ref()),
+        )?;
+    } else {
+        let key = settings.ai_providers.openai.api_key.unwrap_or_default();
+        let key = key.trim();
+        set_or_unset_env(handle, "OPENAI_BASE_URL", None)?;
+        set_or_unset_env(
+            handle,
+            "OPENAI_API_KEY",
+            if key.is_empty() { None } else { Some(key) },
+        )?;
+        set_or_unset_env(handle, "OPENROUTER_API_KEY", None)?;
+        set_or_unset_env(handle, "CODEX_HOME", None)?;
+    }
+
+    Ok(use_openrouter)
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_valid_env_var_name;
@@ -775,32 +799,5 @@ mod tests {
         assert!(!is_valid_env_var_name("A-B"));
         assert!(!is_valid_env_var_name("A B"));
         assert!(!is_valid_env_var_name("A;rm -rf /"));
-    }
-}
-
-fn agent_type_to_env_value(t: AgentType) -> &'static str {
-    match t {
-        AgentType::ClaudeCode => "claude_code",
-        AgentType::GeminiCli => "gemini_cli",
-        AgentType::Codex => "codex",
-        AgentType::Terminal => "terminal",
-    }
-}
-
-fn agent_command_with_model(agent: AgentType, base_cmd: &str, model: Option<&str>) -> String {
-    let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) else {
-        return base_cmd.to_string();
-    };
-    let m = shell_single_quote_escape(model);
-    match agent {
-        AgentType::ClaudeCode => format!("{base_cmd} --model '{m}'"),
-        AgentType::GeminiCli => format!("{base_cmd} --model '{m}'"),
-        // Codex CLI supports config overrides via `-c key=value` (TOML parsed).
-        // We set both model and reasoning effort so sessions are consistent.
-        // Example from codex help: `-c model="o3"`.
-        AgentType::Codex => format!(
-            "{base_cmd} -c 'model=\"{m}\"' -c 'model_reasoning_effort=\"high\"'"
-        ),
-        AgentType::Terminal => base_cmd.to_string(),
     }
 }

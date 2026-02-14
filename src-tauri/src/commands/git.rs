@@ -194,10 +194,13 @@ pub fn git_remove_worktree(
         (Some(req), Some(cur)) => req == cur,
         (Some(_), None) => false,
     };
-    if removing_current_branch && info.agent_type == crate::core::agent_detection::AgentType::Terminal {
+    if removing_current_branch
+        && info.agent_type == crate::core::agent_detection::AgentType::Terminal
+    {
         let cd_cmd = format!("cd '{}'\r\n", info.project_path.replace('\'', "'\\''"));
         let _ = guard.write(args.session_id, &cd_cmd);
-        let _ = guard.set_session_git_context(args.session_id, None, Some(info.project_path.clone()));
+        let _ =
+            guard.set_session_git_context(args.session_id, None, Some(info.project_path.clone()));
     }
 
     Ok(GitRemoveWorktreeResponse { success: true })

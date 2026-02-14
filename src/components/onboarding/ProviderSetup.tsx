@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 
 import type { AiProviderId, AppSettings, ProviderKeyValidationResult, ProviderModelsResult } from "../../lib/types";
 import { settingsListProviderModels, settingsValidateProviderKey } from "../../lib/tauri-api";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { KNOWN_MODELS, mergeModelLists } from "../../lib/known-models";
 
 type ProviderSetupProps = {
@@ -14,19 +13,6 @@ function pill(ok: boolean | null): { text: string; cls: string } {
   if (ok === null) return { text: "not checked", cls: "border-border bg-bg-primary text-text-secondary" };
   if (ok) return { text: "valid", cls: "border-accent-green/40 bg-accent-green/10 text-accent-green" };
   return { text: "invalid", cls: "border-accent-red/40 bg-accent-red/10 text-accent-red" };
-}
-
-function oauthUrlFor(provider: AiProviderId): string {
-  switch (provider) {
-    case "anthropic":
-      return "https://claude.ai";
-    case "google":
-      return "https://aistudio.google.com";
-    case "openai":
-      return "https://platform.openai.com";
-    case "ollama":
-      return "http://localhost:11434";
-  }
 }
 
 export function ProviderSetup(props: ProviderSetupProps) {
@@ -43,9 +29,10 @@ export function ProviderSetup(props: ProviderSetupProps) {
   const providers = useMemo(
     () =>
       [
-        { id: "anthropic" as const, title: "Anthropic", desc: "Claude via API key or OAuth" },
-        { id: "openai" as const, title: "OpenAI", desc: "Chat Completions via key or OAuth" },
-        { id: "google" as const, title: "Google", desc: "Gemini via API key or OAuth" },
+        { id: "anthropic" as const, title: "Anthropic", desc: "Claude via API key" },
+        { id: "openai" as const, title: "OpenAI", desc: "Chat Completions via API key" },
+        { id: "openrouter" as const, title: "OpenRouter", desc: "Open-source + hosted models via API key" },
+        { id: "google" as const, title: "Google", desc: "Gemini via API key" },
         { id: "ollama" as const, title: "Ollama", desc: "Local models via REST API" },
       ] satisfies Array<{ id: AiProviderId; title: string; desc: string }>,
     [],
@@ -151,9 +138,9 @@ export function ProviderSetup(props: ProviderSetupProps) {
             <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">AUTH MODE</div>
             <select
               className="mt-1 h-9 w-full rounded-lg border border-border bg-bg-tertiary px-2 text-xs text-text-primary"
-              value={authMode ?? ""}
+              value={authMode === "apiKey" ? "apiKey" : ""}
               onChange={(e) => {
-                const nextMode = (e.target.value || null) as "apiKey" | "oauth" | null;
+                const nextMode = (e.target.value || null) as "apiKey" | null;
                 props.onChange({
                   ...s,
                   aiProviders: {
@@ -165,13 +152,7 @@ export function ProviderSetup(props: ProviderSetupProps) {
             >
               <option value="">(unset)</option>
               <option value="apiKey">API key</option>
-              <option value="oauth">OAuth</option>
             </select>
-            {authMode === "oauth" ? (
-              <div className="mt-2 rounded-lg border border-accent-orange/35 bg-accent-orange/10 px-2 py-2 text-[11px] text-accent-orange">
-                OAuth sign-in opens the provider site and records your account as connected. Model listing and key validation still require an API key.
-              </div>
-            ) : null}
           </label>
 
           <label className="block">
@@ -260,7 +241,7 @@ export function ProviderSetup(props: ProviderSetupProps) {
             <input
               className="h-9 w-full rounded-lg border border-border bg-bg-primary px-2 font-mono text-[12px] text-text-primary"
               type={showKeys[p.id] ? "text" : "password"}
-              placeholder={authMode === "oauth" ? "(optional in OAuth mode)" : "paste key..."}
+              placeholder="paste key..."
               value={key}
               onChange={(e) => {
                 const nextKey = e.target.value;
@@ -311,48 +292,12 @@ export function ProviderSetup(props: ProviderSetupProps) {
             </div>
           ) : (
             <div className="mt-2 text-[11px] text-text-secondary">
-              Paste an API key and click Validate to test connectivity (OAuth does not validate yet).
+              Paste an API key and click Validate to test connectivity.
             </div>
           )}
           <div className="mt-2 text-[11px] text-text-secondary">
             API keys are stored in plaintext in <span className="font-mono">~/.config/synk/settings.json</span>.
           </div>
-        </div>
-
-        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-bg-tertiary p-3">
-          <div className="min-w-0">
-            <div className="text-[10px] font-semibold tracking-[0.14em] text-text-secondary">OAUTH</div>
-            <div className="mt-1 truncate text-[11px] text-text-secondary">
-              {provider.oauthConnected ? `Connected as ${provider.oauthEmail ?? "(unknown)"}` : "Not connected"}
-            </div>
-          </div>
-          <button
-            className="rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs font-semibold text-text-secondary disabled:opacity-60"
-            type="button"
-            title="Opens sign-in in your browser, then marks this provider connected."
-            onClick={async () => {
-              try {
-                await openUrl(oauthUrlFor(p.id));
-              } catch {
-                // ignore
-              }
-              const email = window.prompt("Enter the account email to display (optional):", provider.oauthEmail ?? "");
-              props.onChange({
-                ...s,
-                aiProviders: {
-                  ...s.aiProviders,
-                  [p.id]: {
-                    ...provider,
-                    authMode: "oauth",
-                    oauthConnected: true,
-                    oauthEmail: email && email.trim() ? email.trim() : null,
-                  },
-                },
-              });
-            }}
-          >
-            Sign In…
-          </button>
         </div>
       </div>
     );
@@ -364,7 +309,7 @@ export function ProviderSetup(props: ProviderSetupProps) {
         <div>
           <div className="text-lg font-semibold tracking-tight">Set up your AI providers</div>
           <div className="mt-1 text-sm text-text-secondary">
-            API keys bill per token. OAuth uses your subscription. You can skip and do this later in Settings.
+            Configure API keys now, or skip and do this later in Settings.
           </div>
         </div>
         <label className="block">
@@ -377,6 +322,7 @@ export function ProviderSetup(props: ProviderSetupProps) {
             <option value="anthropic">anthropic</option>
             <option value="google">google</option>
             <option value="openai">openai</option>
+            <option value="openrouter">openrouter</option>
             <option value="ollama">ollama</option>
           </select>
         </label>

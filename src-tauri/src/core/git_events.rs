@@ -141,7 +141,7 @@ impl GitEventWatcher {
                         let line = git_output(wd, &["log", "-1", "--format", fmt, "HEAD"])
                             .unwrap_or_default();
                         let parts: Vec<&str> = line.split('\x1f').collect();
-                        let author = parts.get(0).map(|s| s.trim()).unwrap_or("").to_string();
+                        let author = parts.first().map(|s| s.trim()).unwrap_or("").to_string();
                         let message = parts.get(1).map(|s| s.trim()).unwrap_or("").to_string();
 
                         latest_commits.push((*session_id, branch, hash, author, message));
@@ -155,7 +155,7 @@ impl GitEventWatcher {
                     let st = state_guard
                         .repo_state
                         .entry(project_path.clone())
-                        .or_insert_with(RepoState::default);
+                        .or_default();
 
                     // First sighting: establish baseline without spamming events.
                     if st.branches.is_empty() {

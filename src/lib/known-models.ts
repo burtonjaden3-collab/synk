@@ -6,6 +6,7 @@ export const KNOWN_MODELS: Record<AiProviderId, string[]> = {
   anthropic: ["claude-sonnet-4-5-20250929", "claude-opus-4-6", "claude-haiku-4-5"],
   // Note: Codex CLI uses its own model IDs; we still keep them here so the Settings picker is useful.
   openai: ["gpt-5.3-codex", "gpt-4o", "o4-mini", "o3-mini"],
+  openrouter: ["openrouter/auto", "qwen/qwen-2.5-coder-32b-instruct", "meta-llama/llama-3.3-70b-instruct"],
   google: ["gemini-2.0-flash", "gemini-2.5-pro"],
   // Ollama is user/local-dependent; keep a couple of common examples.
   ollama: ["llama3.1", "qwen2.5-coder", "mistral"],
