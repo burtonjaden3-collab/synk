@@ -763,7 +763,7 @@ fn shell_single_quote_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::is_valid_env_var_name;
+    use super::{agent_command_with_model, is_valid_env_var_name, AgentType};
 
     #[test]
     fn env_var_name_validation() {
@@ -775,6 +775,20 @@ mod tests {
         assert!(!is_valid_env_var_name("A-B"));
         assert!(!is_valid_env_var_name("A B"));
         assert!(!is_valid_env_var_name("A;rm -rf /"));
+    }
+
+    #[test]
+    fn codex_command_defaults_to_workspace_write_without_model() {
+        let cmd = agent_command_with_model(AgentType::Codex, "codex", None);
+        assert!(cmd.contains("--sandbox workspace-write"));
+        assert!(cmd.contains("--ask-for-approval on-failure"));
+        assert!(cmd.contains("-c 'model_reasoning_effort=\"high\"'"));
+    }
+
+    #[test]
+    fn codex_command_adds_model_override() {
+        let cmd = agent_command_with_model(AgentType::Codex, "codex", Some("gpt-5.3-codex"));
+        assert!(cmd.contains("-c 'model=\"gpt-5.3-codex\"'"));
     }
 }
 
@@ -788,19 +802,35 @@ fn agent_type_to_env_value(t: AgentType) -> &'static str {
 }
 
 fn agent_command_with_model(agent: AgentType, base_cmd: &str, model: Option<&str>) -> String {
-    let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) else {
-        return base_cmd.to_string();
-    };
-    let m = shell_single_quote_escape(model);
     match agent {
-        AgentType::ClaudeCode => format!("{base_cmd} --model '{m}'"),
-        AgentType::GeminiCli => format!("{base_cmd} --model '{m}'"),
+        AgentType::ClaudeCode => {
+            let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) else {
+                return base_cmd.to_string();
+            };
+            let m = shell_single_quote_escape(model);
+            format!("{base_cmd} --model '{m}'")
+        }
+        AgentType::GeminiCli => {
+            let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) else {
+                return base_cmd.to_string();
+            };
+            let m = shell_single_quote_escape(model);
+            format!("{base_cmd} --model '{m}'")
+        }
         // Codex CLI supports config overrides via `-c key=value` (TOML parsed).
-        // We set both model and reasoning effort so sessions are consistent.
+        // We set sandbox/approval defaults so file writes inside the workspace do not
+        // trigger repeated permission prompts, plus reasoning/model consistency.
         // Example from codex help: `-c model="o3"`.
-        AgentType::Codex => format!(
-            "{base_cmd} -c 'model=\"{m}\"' -c 'model_reasoning_effort=\"high\"'"
-        ),
+        AgentType::Codex => {
+            let mut cmd = format!(
+                "{base_cmd} --sandbox workspace-write --ask-for-approval on-failure -c 'model_reasoning_effort=\"high\"'"
+            );
+            if let Some(model) = model.map(str::trim).filter(|s| !s.is_empty()) {
+                let m = shell_single_quote_escape(model);
+                cmd.push_str(&format!(" -c 'model=\"{m}\"'"));
+            }
+            cmd
+        }
         AgentType::Terminal => base_cmd.to_string(),
     }
 }

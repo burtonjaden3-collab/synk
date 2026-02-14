@@ -13,6 +13,7 @@ import type {
   SessionId,
   SessionInfo,
   SessionOutputEvent,
+  SessionCostUpdatedEvent,
   SessionScrollbackResponse,
   SessionSnapshot,
   SessionSnapshotMeta,
@@ -238,6 +239,12 @@ export async function onSessionOutput(
   handler: (payload: SessionOutputEvent) => void,
 ) {
   return listen<SessionOutputEvent>("session:output", (event) => handler(event.payload));
+}
+
+export async function onSessionCostUpdated(
+  handler: (payload: SessionCostUpdatedEvent) => void,
+) {
+  return listen<SessionCostUpdatedEvent>("cost:updated", (event) => handler(event.payload));
 }
 
 export async function onSessionExit(handler: (payload: SessionExitEvent) => void) {
